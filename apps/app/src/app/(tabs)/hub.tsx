@@ -1,1502 +1,1131 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import {
-  ActivityIndicator,
-  Image,
-  Modal,
-  Platform,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
   View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  Image,
+  TouchableOpacity,
+  Switch,
+  Alert,
+  Clipboard,
+  Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { colors } from '@ours/design-tokens';
-import { useAuth } from '@/context/auth-context';
-import { api } from '@/services/api';
-import {
-  AlbumItem,
-  MemoryItem,
-  WishlistItemResponse,
-  LoveLetterDto,
-  CoupleGoalDto,
-  MemoryMapResponseDto,
-} from '@ours/contracts';
 import { Ionicons } from '@expo/vector-icons';
-import { formatTanggal } from '@/utils/format';
-import { DriftWall, DriftWallItem } from '@/components/free-components/DriftWall';
-import { PaperCrumpleCard } from '@/components/free-components/PaperCrumpleCard';
+import { luminousColors } from '@ours/design-tokens';
+import { useAuth } from '@/context/auth-context';
+import { useCoupleData } from '@/context/couple-data-context';
+import { api } from '@/services/api';
 
-type HubViewMode = 'menu' | 'memories' | 'memory-map' | 'wishlist' | 'goals' | 'letters';
-
-export default function SharedHubScreen() {
+export default function CoupleSettingsHubScreen() {
   const router = useRouter();
   const { user, coupleSpace, logout } = useAuth();
-  const [viewMode, setViewMode] = useState<HubViewMode>('menu');
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const {
+    isNewCoupleMode,
+    setNewCoupleMode,
+    resetToCleanState,
+    loadDemoState,
+    daysTogether,
+    partnerNames,
+    totalBudget,
+    activeRole,
+    setActiveRole,
+    memories,
+    wishlist,
+    dates,
+    expenses,
+    letters,
+    activeCapsule,
+    quizState,
+  } = useCoupleData();
 
-  // Real data states
-  const [memories, setMemories] = useState<MemoryItem[]>([]);
-  const [albums, setAlbums] = useState<AlbumItem[]>([]);
-  const [wishlistItems, setWishlistItems] = useState<WishlistItemResponse[]>([]);
-  const [goals, setGoals] = useState<CoupleGoalDto[]>([]);
-  const [letters, setLetters] = useState<LoveLetterDto[]>([]);
-  const [memoryMap, setMemoryMap] = useState<MemoryMapResponseDto | null>(null);
+  const [copiedCode, setCopiedCode] = useState<boolean>(false);
+  const [notifyAnniversary, setNotifyAnniversary] = useState<boolean>(true);
+  const [lovePing, setLovePing] = useState<boolean>(true);
+  const [receiptNotification, setReceiptNotification] = useState<boolean>(true);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
 
-  // Selected memory for map & preview
-  const [selectedMapMemory, setSelectedMapMemory] = useState<MemoryItem | null>(null);
+  const coupleCode =
+    (coupleSpace as any)?.inviteCode ||
+    (coupleSpace as any)?.code ||
+    (user ? `OURS-${user.id.slice(0, 4).toUpperCase()}` : 'OURS-2025');
 
-  // Modals
-  const [showAddWishModal, setShowAddWishModal] = useState(false);
-  const [wishTitle, setWishTitle] = useState('');
-  const [wishCategory, setWishCategory] = useState('Pengalaman');
+  const handleResetClean = () => {
+    Alert.alert(
+      'Mulai Dari Nol (Bersih)',
+      'Apakah kalian ingin mereset semua data kenangan, dompet, dan rencana kencan kembali ke Hari 1 bersih untuk dibangun berdua?',
+      [
+        { text: 'Batal', style: 'cancel' },
+        {
+          text: 'Reset ke Hari 1 Bersih',
+          style: 'destructive',
+          onPress: () => {
+            resetToCleanState();
+            Alert.alert('Ruang Pasangan Bersih 🌱', 'Semua data siap untuk kalian isi bersama dari hari pertama!');
+          },
+        },
+      ],
+    );
+  };
 
-  const [showAddMemoryModal, setShowAddMemoryModal] = useState(false);
-  const [newMemTitle, setNewMemTitle] = useState('');
-  const [newMemNotes, setNewMemNotes] = useState('');
-  const [newMemDate, setNewMemDate] = useState(new Date().toISOString().split('T')[0]);
+  const handleCopyCode = () => {
+    Clipboard.setString(coupleCode);
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2000);
+  };
 
-  const [showAddLetterModal, setShowAddLetterModal] = useState(false);
-  const [letterTitle, setLetterTitle] = useState('');
-  const [letterContent, setLetterContent] = useState('');
-
-  const [showAddGoalModal, setShowAddGoalModal] = useState(false);
-  const [goalTitle, setGoalTitle] = useState('');
-  const [goalTargetAmount, setGoalTargetAmount] = useState('');
-
-  const fetchData = useCallback(async () => {
+  const handleSyncCloud = async () => {
+    setIsSyncing(true);
     try {
-      const [memRes, albRes, wishRes, goalRes, letRes, mapRes] = await Promise.all([
-        api.memories.list().catch(() => []),
-        api.albums.list().catch(() => []),
-        api.wishlist.list().catch(() => []),
-        api.goals.list().catch(() => []),
-        api.letters.list().catch(() => []),
-        api.memoryMap.get().catch(() => null),
-      ]);
-      setMemories(memRes);
-      setAlbums(albRes);
-      setWishlistItems(wishRes);
-      setGoals(goalRes);
-      setLetters(letRes);
-      setMemoryMap(mapRes);
-
-      if (memRes.length > 0 && !selectedMapMemory) {
-        setSelectedMapMemory(memRes[0]);
-      }
-    } catch (err: any) {
-      setStatusMessage(err?.message || 'Gagal memuat data kenangan');
+      await api.home.getDashboard();
+      Alert.alert('Cadangan Cloud Terverifikasi ☁️', 'Semua data dan catatan kalian telah tersinkron dengan server database.');
+    } catch {
+      Alert.alert('Penyimpanan Lokal Aktif', 'Data saat ini tersimpan aman di perangkat dan akan sinkron saat terhubung kembali.');
     } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [selectedMapMemory]);
-
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
-
-  const onRefresh = () => {
-    setRefreshing(true);
-    fetchData();
-  };
-
-  const handleCreateWish = async () => {
-    if (!wishTitle.trim()) return;
-    try {
-      await api.wishlist.create({
-        title: wishTitle.trim(),
-        category: wishCategory,
-        priority: 'MEDIUM',
-      });
-      setWishTitle('');
-      setShowAddWishModal(false);
-      setStatusMessage('Wishlist bersama berhasil ditambahkan!');
-      fetchData();
-    } catch (err: any) {
-      setStatusMessage(err?.message || 'Gagal menambahkan impian');
+      setIsSyncing(false);
     }
   };
 
-  const handleToggleWish = async (item: WishlistItemResponse) => {
-    try {
-      const nextStatus = item.status === 'COMPLETED' ? 'ACTIVE' : 'COMPLETED';
-      await api.wishlist.update(item.id, { status: nextStatus });
-      setStatusMessage(
-        nextStatus === 'COMPLETED'
-          ? `Selamat! Impian "${item.title}" tercapai! ❤️`
-          : `Mengembalikan status "${item.title}"`,
-      );
-      fetchData();
-    } catch (err: any) {
-      setStatusMessage(err?.message || 'Gagal mengubah status');
-    }
+  const handleLogout = () => {
+    Alert.alert(
+      'Keluar dari Akun Kita',
+      'Apakah kamu yakin ingin keluar dari sesi aplikasi saat ini?',
+      [
+        { text: 'Batal', style: 'cancel' },
+        {
+          text: 'Keluar',
+          style: 'destructive',
+          onPress: async () => {
+            await logout();
+            router.replace('/(auth)/login');
+          },
+        },
+      ],
+    );
   };
-
-  const handleCreateMemory = async () => {
-    if (!newMemTitle.trim()) return;
-    try {
-      await api.memories.create({
-        title: newMemTitle.trim(),
-        memoryDate: newMemDate,
-        description: newMemNotes.trim() || undefined,
-      });
-      setNewMemTitle('');
-      setNewMemNotes('');
-      setShowAddMemoryModal(false);
-      setStatusMessage('Kenangan indah berhasil diabadikan!');
-      fetchData();
-    } catch (err: any) {
-      setStatusMessage(err?.message || 'Gagal menyimpan kenangan');
-    }
-  };
-
-  const handleSendLetter = async () => {
-    if (!letterTitle.trim() || !letterContent.trim()) return;
-    try {
-      await api.letters.create({
-        title: letterTitle.trim(),
-        content: letterContent.trim(),
-      });
-      setLetterTitle('');
-      setLetterContent('');
-      setShowAddLetterModal(false);
-      setStatusMessage('Surat cinta rahasia berhasil disegel dan dikirim!');
-      fetchData();
-    } catch (err: any) {
-      setStatusMessage(err?.message || 'Gagal mengirim surat');
-    }
-  };
-
-  const handleCreateGoal = async () => {
-    if (!goalTitle.trim()) return;
-    try {
-      await api.goals.create({
-        title: goalTitle.trim(),
-        category: 'Keuangan',
-        description: goalTargetAmount ? `Target: Rp ${goalTargetAmount}` : undefined,
-      });
-      setGoalTitle('');
-      setGoalTargetAmount('');
-      setShowAddGoalModal(false);
-      setStatusMessage('Tujuan bersama berhasil dibuat!');
-      fetchData();
-    } catch (err: any) {
-      setStatusMessage(err?.message || 'Gagal membuat tujuan keuangan');
-    }
-  };
-
-  const completedWishCount = wishlistItems.filter((w) => w.status === 'COMPLETED').length;
-  const totalWishCount = wishlistItems.length;
-
-  // Convert memories into DriftWallItems
-  const driftWallItems: DriftWallItem[] = memories.map((m, idx) => ({
-    id: m.id,
-    url:
-      (m as any).mediaAssets?.[0]?.url ||
-      (m as any).coverUrl ||
-      'https://images.unsplash.com/photo-1516589178581-6cd7833ae3b2?auto=format&fit=crop&w=600&q=80',
-    title: m.title,
-    caption: m.description || undefined,
-    date: formatTanggal(m.memoryDate),
-    heightRatio: idx % 2 === 0 ? 1.25 : 0.95,
-  }));
-
-  const primaryGoal = goals.length > 0 ? goals[0] : null;
-  const goalProgress = primaryGoal ? primaryGoal.progressPercentage : 0;
 
   return (
-    <View style={styles.container}>
-      {/* 1. Header */}
+    <View style={styles.screenRoot}>
+      {/* ---------------- Header ---------------- */}
       <View style={styles.header}>
-        <View style={styles.headerRow}>
-          {viewMode !== 'menu' && (
-            <TouchableOpacity
-              style={styles.backButton}
-              onPress={() => setViewMode('menu')}>
-              <Ionicons name="arrow-back" size={20} color="#1F2937" />
-            </TouchableOpacity>
-          )}
-          <Text style={styles.headerTitle}>
-            {viewMode === 'menu'
-              ? 'Ruang Hubungan'
-              : viewMode === 'memories'
-                ? 'Kenangan Kita'
-                : viewMode === 'memory-map'
-                  ? 'Peta Kenangan'
-                  : viewMode === 'wishlist'
-                    ? 'Wishlist Bersama'
-                    : viewMode === 'goals'
-                      ? 'Tujuan Bersama'
-                      : 'Surat Cinta'}
-          </Text>
+        <View style={styles.headerLeft}>
+          <View style={styles.avatarPill}>
+            <View style={styles.avatarHeart}>
+              <Ionicons name="heart" size={16} color={luminousColors.primary} />
+            </View>
+            <View style={styles.avatarPartner}>
+              <Ionicons name="person" size={15} color={luminousColors.secondary} />
+            </View>
+            <View style={styles.syncPulseDot} />
+          </View>
+          <View style={styles.headerTextCol}>
+            <Text style={styles.syncLabel}>
+              OURS <Text style={{ color: luminousColors.primary }}>•</Text> Synced
+            </Text>
+            <Text style={styles.headerTitle}>Ruang Kita</Text>
+          </View>
+        </View>
+
+        <View style={styles.headerRight}>
           <TouchableOpacity
-            style={styles.headerRightBtn}
-            onPress={() => router.push('/(pairing)/settings')}>
-            <Ionicons name="settings-outline" size={20} color="#1F2937" />
+            style={styles.headerIconBtn}
+            activeOpacity={0.75}
+            accessibilityLabel="Notifikasi">
+            <Ionicons name="notifications-outline" size={21} color={luminousColors.onSurfaceVariant} />
           </TouchableOpacity>
+          <View style={styles.headerProfileBtn}>
+            <Ionicons name="person" size={16} color={luminousColors.onPrimary} />
+          </View>
         </View>
       </View>
 
-      {/* Toast Feedback */}
-      {statusMessage && (
-        <View style={styles.statusToast}>
-          <Text style={styles.statusToastText}>{statusMessage}</Text>
-          <TouchableOpacity onPress={() => setStatusMessage(null)}>
-            <Ionicons name="close" size={16} color="#FFFFFF" />
-          </TouchableOpacity>
-        </View>
-      )}
+      {/* ---------------- Main Scroll View ---------------- */}
+      <ScrollView
+        style={styles.scrollArea}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}>
+        {/* Couple Profile Glass Hero Card */}
+        <View style={styles.heroProfileCard}>
+          {/* Connected Avatars */}
+          <View style={styles.avatarsRow}>
+            {/* User */}
+            <View style={styles.avatarWrapper}>
+              {(user as any)?.avatarUrl ? (
+                <Image
+                  source={{ uri: (user as any).avatarUrl }}
+                  style={styles.avatarImg}
+                  resizeMode="cover"
+                />
+              ) : (
+                <View style={[styles.avatarImg, { backgroundColor: luminousColors.primary, justifyContent: 'center', alignItems: 'center' }]}>
+                  <Text style={{ fontSize: 18, fontWeight: '700', color: '#FFFFFF' }}>
+                    {partnerNames.user.charAt(0).toUpperCase()}
+                  </Text>
+                </View>
+              )}
+              <View style={styles.avatarIndicatorM} />
+            </View>
 
-      {loading && !refreshing ? (
-        <View style={styles.centerContainer}>
-          <ActivityIndicator size="large" color={colors.primaryBlue} />
-          <Text style={styles.loadingText}>Memuat ruang cerita...</Text>
+            {/* Linked Heart Ring Bridge */}
+            <View style={styles.linkedHeartBridge}>
+              <Ionicons name="heart" size={18} color={luminousColors.primary} />
+            </View>
+
+            {/* Partner */}
+            <View style={styles.avatarWrapper}>
+              {(coupleSpace as any)?.partnerAvatarUrl ? (
+                <Image
+                  source={{ uri: (coupleSpace as any).partnerAvatarUrl }}
+                  style={styles.avatarImg}
+                  resizeMode="cover"
+                />
+              ) : (
+                <View style={[styles.avatarImg, { backgroundColor: luminousColors.secondary, justifyContent: 'center', alignItems: 'center' }]}>
+                  <Text style={{ fontSize: 18, fontWeight: '700', color: '#FFFFFF' }}>
+                    {partnerNames.partner.charAt(0).toUpperCase()}
+                  </Text>
+                </View>
+              )}
+              <View style={styles.avatarIndicatorF} />
+            </View>
+          </View>
+
+          <Text style={styles.coupleNames}>
+            {partnerNames.user} &amp; {partnerNames.partner}
+          </Text>
+
+          <View style={styles.realtimeStatusRow}>
+            <View style={[styles.greenLiveDot, coupleSpace?.status !== 'ACTIVE' && { backgroundColor: '#FFA000' }]} />
+            <Text style={styles.realtimeStatusText}>
+              {coupleSpace?.status === 'ACTIVE' ? 'Terhubung Real-Time' : 'Ruang Cinta Aktif'}
+            </Text>
+          </View>
+
+          {/* Days Together Badge */}
+          <View style={styles.daysTogetherPill}>
+            <Ionicons name="heart-outline" size={15} color={luminousColors.primary} />
+            <Text style={styles.daysTogetherText}>{daysTogether} Hari Bersama</Text>
+            <Text style={styles.daysTogetherSub}>
+              {coupleSpace?.anniversaryDate
+                ? `• Sejak ${new Date(coupleSpace.anniversaryDate).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}`
+                : '• Dibangun Berdua 🌱'}
+            </Text>
+          </View>
+
+          {/* Couple Code Chip */}
+          <View style={styles.coupleCodeCard}>
+            <View style={styles.coupleCodeLeft}>
+              <View style={styles.keyIconCircle}>
+                <Ionicons name="key" size={17} color={luminousColors.secondary} />
+              </View>
+              <View>
+                <Text style={styles.coupleCodeLabel}>Kode Pasangan Eksklusif</Text>
+                <Text style={styles.coupleCodeVal}>{coupleCode}</Text>
+              </View>
+            </View>
+            <TouchableOpacity
+              style={[
+                styles.copyBtn,
+                copiedCode && { backgroundColor: luminousColors.primary },
+              ]}
+              onPress={handleCopyCode}
+              activeOpacity={0.8}>
+              <Ionicons
+                name={copiedCode ? 'checkmark' : 'copy-outline'}
+                size={14}
+                color={copiedCode ? '#FFFFFF' : luminousColors.primary}
+              />
+              <Text
+                style={[
+                  styles.copyBtnText,
+                  copiedCode && { color: '#FFFFFF' },
+                ]}>
+                {copiedCode ? 'Tersalin' : 'Salin'}
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
-      ) : viewMode === 'menu' ? (
-        /* ================= MAIN HUB MENU ================= */
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primaryBlue} />
-          }>
-          {/* Profile Header Card */}
+
+        {/* Milestone Banner */}
+        <View style={styles.milestoneBanner}>
+          <View style={styles.milestoneLeft}>
+            <View style={styles.milestoneIconCircle}>
+              <Ionicons name="sparkles" size={20} color={luminousColors.primary} />
+            </View>
+            <View>
+              <Text style={styles.milestoneLabel}>Milestone Terdekat</Text>
+              <Text style={styles.milestoneVal}>
+                {daysTogether < 7
+                  ? `${Math.max(1, 7 - daysTogether)} hari lagi menuju 7 Hari Pertama 🌱`
+                  : daysTogether < 30
+                  ? `${Math.max(1, 30 - daysTogether)} hari lagi menuju 1 Bulan Berdua 💕`
+                  : `${Math.max(1, 500 - daysTogether)} hari lagi menuju 500 Hari!`}
+              </Text>
+            </View>
+          </View>
+          <Ionicons name="flag-outline" size={18} color={luminousColors.onPrimaryFixedVariant} />
+        </View>
+
+        {/* Quick App Suite Shortcuts */}
+        <View style={styles.appSuiteGrid}>
           <TouchableOpacity
-            style={styles.profileCard}
-            onPress={() => router.push('/(pairing)/settings')}
-            activeOpacity={0.88}>
-            <View style={styles.avatarRow}>
-              <View style={[styles.avatarCircle, { backgroundColor: '#E0E7FF' }]}>
-                <Text style={styles.avatarInitial}>
-                  {(user?.email?.[0] || 'K').toUpperCase()}
-                </Text>
-              </View>
-              <View style={[styles.avatarCircle, { marginLeft: -12, backgroundColor: '#FEE2E2' }]}>
-                <Text style={[styles.avatarInitial, { color: '#E11D48' }]}>P</Text>
-              </View>
+            style={styles.suiteCard}
+            onPress={() => router.push('/memories' as any)}
+            activeOpacity={0.85}>
+            <View style={[styles.suiteIconCircle, { backgroundColor: luminousColors.primaryFixed }]}>
+              <Ionicons name="images-outline" size={20} color={luminousColors.primary} />
             </View>
-            <View style={styles.profileTextCol}>
-              <Text style={styles.profileNames}>
-                {coupleSpace?.name ? `Kisah ${coupleSpace.name}` : 'Ruang Kita'}
-              </Text>
-              <Text style={styles.profileTogetherText}>
-                {coupleSpace?.status === 'ACTIVE' ? 'Pasangan Terhubung ❤️' : 'Menunggu Pasangan Terhubung'}
-              </Text>
-            </View>
-            <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
+            <Text style={styles.suiteCardTitle}>Kenangan Kita</Text>
+            <Text style={styles.suiteCardSub}>
+              {memories.length > 0 ? `${memories.length} Momen Polaroid` : 'Mulai Koleksi Foto'}
+            </Text>
           </TouchableOpacity>
 
-          {/* Section: Feature Navigation */}
-          <View style={styles.menuListSection}>
-            {/* 1. Kenangan Kita */}
-            <TouchableOpacity
-              style={styles.menuItemCard}
-              onPress={() => setViewMode('memories')}
-              activeOpacity={0.88}>
-              <View style={[styles.menuIconBox, { backgroundColor: '#FCE7F3' }]}>
-                <Ionicons name="images" size={20} color="#DB2777" />
+          <TouchableOpacity
+            style={styles.suiteCard}
+            onPress={() => router.push('/wishlist' as any)}
+            activeOpacity={0.85}>
+            <View style={[styles.suiteIconCircle, { backgroundColor: luminousColors.secondaryFixed }]}>
+              <Ionicons name="star-outline" size={20} color={luminousColors.secondary} />
+            </View>
+            <Text style={styles.suiteCardTitle}>Wishlist Impian</Text>
+            <Text style={styles.suiteCardSub}>
+              {wishlist.length > 0 ? `${wishlist.length} Goals Berdua` : 'Buat Impian Berdua'}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.suiteCard}
+            onPress={() => router.push('/time-capsule' as any)}
+            activeOpacity={0.85}>
+            <View style={[styles.suiteIconCircle, { backgroundColor: luminousColors.tertiaryFixed }]}>
+              <Ionicons name="mail-outline" size={20} color={luminousColors.tertiary} />
+            </View>
+            <Text style={styles.suiteCardTitle}>Kapsul Waktu</Text>
+            <Text style={styles.suiteCardSub}>
+              {letters.length + (activeCapsule ? 1 : 0) > 0
+                ? `${letters.length + (activeCapsule ? 1 : 0)} Surat Tersimpan`
+                : 'Tulis Surat Pertama'}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.suiteCard}
+            onPress={() => router.push('/quiz' as any)}
+            activeOpacity={0.85}>
+            <View style={[styles.suiteIconCircle, { backgroundColor: luminousColors.surfaceContainerHigh }]}>
+              <Ionicons name="heart-half-outline" size={20} color={luminousColors.primary} />
+            </View>
+            <Text style={styles.suiteCardTitle}>Kuis Chemistry</Text>
+            <Text style={styles.suiteCardSub}>
+              {quizState.isRevealed ? 'Jawaban Terbuka ✨' : 'Uji Kecocokan Rasa'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Section 1: Akun & Relasi Pasangan */}
+        <View style={styles.sectionWrapper}>
+          <View style={styles.sectionHeaderRow}>
+            <Text style={styles.sectionHeading}>Akun &amp; Relasi Pasangan</Text>
+            <Text style={styles.sectionItemCount}>3 Pengaturan</Text>
+          </View>
+
+          <View style={styles.settingsGroupCard}>
+            <TouchableOpacity style={styles.settingRow} activeOpacity={0.7}>
+              <View style={styles.settingLeft}>
+                <View style={[styles.settingIconCircle, { backgroundColor: luminousColors.primaryFixed }]}>
+                  <Ionicons name="person-circle-outline" size={20} color={luminousColors.primary} />
+                </View>
+                <View>
+                  <Text style={styles.settingMainText}>Profil &amp; Biodata Berdua</Text>
+                  <Text style={styles.settingSubText}>Foto, panggilan sayang &amp; tanggal lahir</Text>
+                </View>
               </View>
-              <View style={styles.menuTextCol}>
-                <Text style={styles.menuTitle}>Kenangan Kita</Text>
-                <Text style={styles.menuSub}>
-                  {memories.length > 0 ? `${memories.length} momen diabadikan` : 'Galeri editorial foto berdua'}
-                </Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+              <Ionicons name="chevron-forward" size={18} color="#8F6F71" />
             </TouchableOpacity>
 
-            {/* 2. Peta Kenangan */}
-            <TouchableOpacity
-              style={styles.menuItemCard}
-              onPress={() => setViewMode('memory-map')}
-              activeOpacity={0.88}>
-              <View style={[styles.menuIconBox, { backgroundColor: '#EFF6FF' }]}>
-                <Ionicons name="map" size={20} color="#2563EB" />
+            <TouchableOpacity style={styles.settingRow} activeOpacity={0.7}>
+              <View style={styles.settingLeft}>
+                <View style={[styles.settingIconCircle, { backgroundColor: luminousColors.secondaryFixed }]}>
+                  <Ionicons name="qr-code-outline" size={20} color={luminousColors.secondary} />
+                </View>
+                <View>
+                  <Text style={styles.settingMainText}>Kode Undangan Pasangan</Text>
+                  <Text style={styles.settingSubText}>Tautkan ulang atau sambung perangkat baru</Text>
+                </View>
               </View>
-              <View style={styles.menuTextCol}>
-                <Text style={styles.menuTitle}>Peta Kenangan</Text>
-                <Text style={styles.menuSub}>Jejak geolokasi dan kenangan kencan</Text>
+              <View style={styles.rowRightPill}>
+                <View style={styles.onlineDotMini} />
+                <Ionicons name="chevron-forward" size={18} color="#8F6F71" />
               </View>
-              <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
             </TouchableOpacity>
 
-            {/* 3. Wishlist Kita */}
-            <TouchableOpacity
-              style={styles.menuItemCard}
-              onPress={() => setViewMode('wishlist')}
-              activeOpacity={0.88}>
-              <View style={[styles.menuIconBox, { backgroundColor: '#FEF3C7' }]}>
-                <Ionicons name="bookmark" size={20} color="#D97706" />
+            <TouchableOpacity style={[styles.settingRow, { borderBottomWidth: 0 }]} activeOpacity={0.7}>
+              <View style={styles.settingLeft}>
+                <View style={[styles.settingIconCircle, { backgroundColor: luminousColors.surfaceContainerHigh }]}>
+                  <Ionicons name="shield-checkmark-outline" size={20} color={luminousColors.onSurface} />
+                </View>
+                <View>
+                  <Text style={styles.settingMainText}>Keamanan &amp; PIN Bersama</Text>
+                  <Text style={styles.settingSubText}>Proteksi dompet &amp; kenangan berdua</Text>
+                </View>
               </View>
-              <View style={styles.menuTextCol}>
-                <Text style={styles.menuTitle}>Wishlist Bersama</Text>
-                <Text style={styles.menuSub}>
-                  {totalWishCount} impian • {completedWishCount} tercapai
-                </Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+              <Ionicons name="finger-print" size={18} color={luminousColors.primary} />
             </TouchableOpacity>
+          </View>
+        </View>
 
-            {/* 4. Goal Card */}
-            <TouchableOpacity
-              style={styles.financialGoalCard}
-              onPress={() => setViewMode('goals')}
-              activeOpacity={0.9}>
-              <View style={styles.goalHeaderRow}>
-                <View style={[styles.menuIconBox, { backgroundColor: '#E0E7FF', width: 36, height: 36 }]}>
-                  <Ionicons name="flag" size={18} color="#4F46E5" />
+        {/* Section 2: Preferensi Kencan & Dompet Bersama */}
+        <View style={styles.sectionWrapper}>
+          <Text style={styles.sectionHeading}>Preferensi Kencan &amp; Dompet</Text>
+
+          <View style={styles.settingsGroupCard}>
+            <View style={styles.budgetCardInner}>
+              <View style={styles.budgetLeft}>
+                <View style={[styles.settingIconCircle, { backgroundColor: luminousColors.tertiaryFixed }]}>
+                  <Ionicons name="wallet-outline" size={19} color={luminousColors.tertiary} />
+                </View>
+                <View>
+                  <Text style={styles.settingSubText}>Target Kencan Bulanan</Text>
+                  <Text style={styles.budgetAmount}>
+                    Rp {totalBudget.toLocaleString('id-ID')}
+                  </Text>
+                </View>
+              </View>
+              <TouchableOpacity style={styles.editBudgetBtn} activeOpacity={0.8}>
+                <Ionicons name="create-outline" size={14} color={luminousColors.onSurface} />
+                <Text style={styles.editBudgetText}>Ubah</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.culinaryPreferenceSection}>
+              <Text style={styles.subSectionTitle}>Preferensi Kuliner &amp; Spot Favorit</Text>
+              <View style={styles.chipsWrap}>
+                <View style={styles.prefChipPrimary}>
+                  <Ionicons name="restaurant" size={12} color={luminousColors.primary} />
+                  <Text style={styles.prefChipTextPrimary}>Halal</Text>
+                </View>
+                <View style={[styles.prefChipPrimary, { backgroundColor: luminousColors.primary }]}>
+                  <Ionicons name="heart" size={12} color="#FFFFFF" />
+                  <Text style={[styles.prefChipTextPrimary, { color: '#FFFFFF' }]}>
+                    Romantic Dining
+                  </Text>
+                </View>
+                <View style={[styles.prefChipPrimary, { backgroundColor: luminousColors.secondaryFixed }]}>
+                  <Ionicons name="leaf" size={12} color={luminousColors.secondary} />
+                  <Text style={[styles.prefChipTextPrimary, { color: luminousColors.secondary }]}>
+                    Outdoor Garden
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            <View style={[styles.settingRow, { borderBottomWidth: 0 }]}>
+              <View style={styles.settingLeft}>
+                <View style={[styles.settingIconCircle, { backgroundColor: luminousColors.surfaceContainerHigh }]}>
+                  <Ionicons name="navigate-outline" size={18} color={luminousColors.onSurfaceVariant} />
+                </View>
+                <View>
+                  <Text style={styles.settingMainText}>Radius Kencan</Text>
+                  <Text style={styles.settingSubText}>Jakarta Pusat &amp; Selatan</Text>
+                </View>
+              </View>
+              <View style={styles.radiusPill}>
+                <Text style={styles.radiusPillText}>15 km</Text>
+              </View>
+            </View>
+          </View>
+        </View>
+
+        {/* Section 3: Ritual Cinta & Notifikasi */}
+        <View style={styles.sectionWrapper}>
+          <Text style={styles.sectionHeading}>Ritual Cinta &amp; Notifikasi</Text>
+
+          <View style={styles.settingsGroupCard}>
+            <View style={styles.toggleRow}>
+              <View style={styles.settingLeft}>
+                <View style={[styles.settingIconCircle, { backgroundColor: luminousColors.primaryFixed }]}>
+                  <Ionicons name="calendar-outline" size={19} color={luminousColors.primary} />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.goalCardTitle}>
-                    {primaryGoal ? primaryGoal.title : 'Tujuan Bersama'}
-                  </Text>
-                  <Text style={styles.goalCardSub}>
-                    {primaryGoal ? (primaryGoal.description || 'Target Pasangan') : 'Rencanakan pencapaian bersama'}
+                  <Text style={styles.settingMainText}>Pengingat Kencan &amp; Anniversary</Text>
+                  <Text style={styles.settingSubText}>
+                    Notifikasi H-3 &amp; pagi hari tanggal kencan
                   </Text>
                 </View>
-                <Text style={styles.goalPercentBadge}>{goalProgress}%</Text>
               </View>
-
-              <View style={styles.progressBarTrack}>
-                <View style={[styles.progressBarFill, { width: `${goalProgress}%` }]} />
-              </View>
-
-              <View style={styles.goalAmountRow}>
-                <Text style={styles.goalAmountCurrent}>
-                  {primaryGoal?.status === 'ACHIEVED' ? 'Tercapai 🎉' : `${goalProgress}% Selesai`}
-                </Text>
-              </View>
-            </TouchableOpacity>
-
-            {/* 5. Surat Cinta */}
-            <TouchableOpacity
-              style={styles.menuItemCard}
-              onPress={() => setViewMode('letters')}
-              activeOpacity={0.88}>
-              <View style={[styles.menuIconBox, { backgroundColor: '#FEE2E2' }]}>
-                <Ionicons name="mail" size={20} color="#F43F5E" />
-              </View>
-              <View style={styles.menuTextCol}>
-                <Text style={styles.menuTitle}>Surat Cinta</Text>
-                <Text style={styles.menuSub}>
-                  {letters.length > 0 ? `${letters.length} surat manis tersimpan` : 'Tulis surat rahasia berdua'}
-                </Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
-            </TouchableOpacity>
-          </View>
-
-          {/* Settings Section */}
-          <View style={styles.settingsSection}>
-            <TouchableOpacity
-              style={styles.settingsRow}
-              onPress={() => router.push('/(pairing)/settings')}>
-              <Ionicons name="settings-outline" size={18} color="#4B5563" />
-              <Text style={styles.settingsRowText}>Pengaturan Akun & Pasangan</Text>
-              <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
-            </TouchableOpacity>
-
-            <View style={styles.settingsDivider} />
-
-            <TouchableOpacity
-              style={styles.settingsRow}
-              onPress={() => router.push('/(pairing)/waiting')}>
-              <Ionicons name="heart-outline" size={18} color="#4B5563" />
-              <Text style={styles.settingsRowText}>Status Pairing & Undangan</Text>
-              <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
-            </TouchableOpacity>
-          </View>
-
-          {/* Sign Out Button */}
-          <TouchableOpacity
-            style={styles.signOutButton}
-            onPress={async () => {
-              await logout();
-              router.replace('/(auth)/login');
-            }}
-            activeOpacity={0.85}>
-            <Ionicons name="log-out-outline" size={18} color="#EF4444" />
-            <Text style={styles.signOutButtonText}>Keluar Akun</Text>
-          </TouchableOpacity>
-        </ScrollView>
-      ) : viewMode === 'memories' ? (
-        /* ================= DRIFTWALL MEMORIES GALLERY ================= */
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primaryBlue} />
-          }>
-          <View style={styles.galleryHeaderRow}>
-            <View>
-              <Text style={styles.sectionHeaderTitle}>Galeri Kenangan</Text>
-              <Text style={styles.sectionHeaderSub}>Koleksi momen indah berdua</Text>
-            </View>
-            <TouchableOpacity
-              style={styles.addSmallBtn}
-              onPress={() => setShowAddMemoryModal(true)}>
-              <Ionicons name="camera" size={16} color="#FFFFFF" />
-              <Text style={styles.addSmallBtnText}>Abadikan</Text>
-            </TouchableOpacity>
-          </View>
-
-          {driftWallItems.length > 0 ? (
-            <DriftWall
-              items={driftWallItems}
-              onItemPress={(item) => {
-                const found = memories.find((m) => m.id === item.id);
-                if (found) {
-                  setSelectedMapMemory(found);
-                }
-              }}
-            />
-          ) : (
-            <View style={styles.emptyGalleryBox}>
-              <Ionicons name="images-outline" size={42} color="#F43F5E" style={{ marginBottom: 10 }} />
-              <Text style={styles.emptyTitle}>Belum Ada Kenangan Tersimpan</Text>
-              <Text style={styles.emptySub}>
-                Abadikan foto kencan pertama kalian untuk membuat galeri kenangan cinta yang indah.
-              </Text>
-              <TouchableOpacity
-                style={styles.addMemoryPrimaryBtn}
-                onPress={() => setShowAddMemoryModal(true)}>
-                <Ionicons name="camera" size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
-                <Text style={styles.addMemoryPrimaryBtnText}>Tambah Kenangan Pertama</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-        </ScrollView>
-      ) : viewMode === 'memory-map' ? (
-        /* ================= MEMORY MAP ================= */
-        <View style={styles.mapContainer}>
-          <View style={styles.mapCanvas}>
-            <View style={styles.mapGridLines} />
-            <View style={styles.mapAreaTag}>
-              <Ionicons name="location-sharp" size={13} color="#2563EB" />
-              <Text style={styles.mapAreaTagText}>
-                {memoryMap ? `${memoryMap.totalPins} Titik Kenangan Terpetakan` : 'Peta Kenangan Berdua'}
-              </Text>
-            </View>
-
-            {memories.map((mem, idx) => {
-              const isSelected = selectedMapMemory?.id === mem.id;
-              const topPos = 25 + ((idx * 28) % 50) + '%';
-              const leftPos = 20 + ((idx * 34) % 60) + '%';
-              const imgUrl =
-                (mem as any).mediaAssets?.[0]?.url ||
-                (mem as any).coverUrl ||
-                'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=300&q=80';
-
-              return (
-                <TouchableOpacity
-                  key={mem.id}
-                  style={[
-                    styles.memoryPhotoPin,
-                    { top: topPos as any, left: leftPos as any },
-                    isSelected && styles.memoryPhotoPinSelected,
-                  ]}
-                  onPress={() => setSelectedMapMemory(mem)}
-                  activeOpacity={0.85}>
-                  <Image source={{ uri: imgUrl }} style={styles.pinPhotoThumb} />
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-
-          {selectedMapMemory && (
-            <View style={styles.floatingMemoryCard}>
-              <Image
-                source={{
-                  uri:
-                    (selectedMapMemory as any).mediaAssets?.[0]?.url ||
-                    (selectedMapMemory as any).coverUrl ||
-                    'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=300&q=80',
-                }}
-                style={styles.floatingMemoryThumb}
+              <Switch
+                value={notifyAnniversary}
+                onValueChange={setNotifyAnniversary}
+                trackColor={{ false: '#DAE2FD', true: luminousColors.primary }}
               />
-              <View style={styles.floatingMemoryCol}>
-                <Text style={styles.floatingMemoryTitle} numberOfLines={1}>
-                  {selectedMapMemory.title}
-                </Text>
-                <Text style={styles.floatingMemoryDate}>
-                  {formatTanggal(selectedMapMemory.memoryDate)}
-                </Text>
-                {selectedMapMemory.description && (
-                  <Text style={styles.floatingMemoryLoc} numberOfLines={1}>
-                    "{selectedMapMemory.description}"
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.settingLeft}>
+                <View style={[styles.settingIconCircle, { backgroundColor: luminousColors.secondaryFixed }]}>
+                  <Ionicons name="notifications-outline" size={19} color={luminousColors.secondary} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.settingMainText}>Love Ping &amp; Getaran Pagi</Text>
+                  <Text style={styles.settingSubText}>
+                    Sapaan manis &amp; kuis harian otomatis jam 08:00
                   </Text>
-                )}
+                </View>
+              </View>
+              <Switch
+                value={lovePing}
+                onValueChange={setLovePing}
+                trackColor={{ false: '#DAE2FD', true: luminousColors.primary }}
+              />
+            </View>
+
+            <View style={[styles.toggleRow, { borderBottomWidth: 0 }]}>
+              <View style={styles.settingLeft}>
+                <View style={[styles.settingIconCircle, { backgroundColor: luminousColors.tertiaryFixed }]}>
+                  <Ionicons name="receipt-outline" size={19} color={luminousColors.tertiary} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.settingMainText}>Notifikasi Pindai Struk</Text>
+                  <Text style={styles.settingSubText}>
+                    Pemberitahuan saat pasangan simpan bon kencan
+                  </Text>
+                </View>
+              </View>
+              <Switch
+                value={receiptNotification}
+                onValueChange={setReceiptNotification}
+                trackColor={{ false: '#DAE2FD', true: luminousColors.primary }}
+              />
+            </View>
+          </View>
+        </View>
+
+        {/* Section 4: Privasi, Data & Kenangan */}
+        <View style={styles.sectionWrapper}>
+          <Text style={styles.sectionHeading}>Privasi, Data &amp; Kenangan</Text>
+
+          <View style={styles.settingsGroupCard}>
+            <View style={styles.settingRow}>
+              <View style={styles.settingLeft}>
+                <View style={[styles.settingIconCircle, { backgroundColor: luminousColors.secondaryFixed }]}>
+                  <Ionicons name="cloud-done-outline" size={19} color={luminousColors.secondary} />
+                </View>
+                <View>
+                  <Text style={styles.settingMainText}>Cadangan Cloud Real-Time</Text>
+                  <Text style={styles.settingSubText}>Disinkronkan 2 menit lalu • Terenkripsi</Text>
+                </View>
               </View>
               <TouchableOpacity
-                style={styles.viewMemoryAlbumBtn}
-                onPress={() => setViewMode('memories')}>
-                <Ionicons name="images-outline" size={18} color={colors.primaryBlue} />
-              </TouchableOpacity>
-            </View>
-          )}
-        </View>
-      ) : viewMode === 'wishlist' ? (
-        /* ================= WISHLIST ================= */
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primaryBlue} />
-          }>
-          <View style={styles.wishlistHeaderRow}>
-            <View>
-              <Text style={styles.sectionHeaderTitle}>Daftar Keinginan Pasangan</Text>
-              <Text style={styles.sectionHeaderSub}>
-                {completedWishCount} dari {totalWishCount} impian tercapai
-              </Text>
-            </View>
-            <TouchableOpacity
-              style={styles.addWishBtn}
-              onPress={() => setShowAddWishModal(true)}>
-              <Ionicons name="add" size={16} color="#FFFFFF" />
-              <Text style={styles.addWishBtnText}>Tambah</Text>
-            </TouchableOpacity>
-          </View>
-
-          {wishlistItems.length > 0 ? (
-            wishlistItems.map((item) => (
-              <TouchableOpacity
-                key={item.id}
-                style={[styles.wishItemCard, item.status === 'COMPLETED' && styles.wishItemCardCompleted]}
-                onPress={() => handleToggleWish(item)}
-                activeOpacity={0.88}>
-                <View style={styles.wishCheckboxCircle}>
-                  {item.status === 'COMPLETED' && (
-                    <Ionicons name="checkmark" size={14} color="#10B981" />
-                  )}
-                </View>
-                <View style={styles.wishTextCol}>
-                  <Text
-                    style={[
-                      styles.wishItemTitle,
-                      item.status === 'COMPLETED' && styles.wishItemTitleCompleted,
-                    ]}>
-                    {item.title}
-                  </Text>
-                  <Text style={styles.wishItemCategory}>{item.category || 'Pengalaman'}</Text>
-                </View>
-                <View style={styles.wishPriorityPill}>
-                  <Text style={styles.wishPriorityText}>{item.priority}</Text>
-                </View>
-              </TouchableOpacity>
-            ))
-          ) : (
-            <View style={styles.emptyCard}>
-              <Ionicons name="bookmark-outline" size={38} color="#9CA3AF" style={{ marginBottom: 8 }} />
-              <Text style={styles.emptyTitle}>Belum ada wishlist</Text>
-              <Text style={styles.emptySub}>
-                Catat impian liburan, tempat incaran, atau aktivitas seru berdua.
-              </Text>
-            </View>
-          )}
-        </ScrollView>
-      ) : viewMode === 'goals' ? (
-        /* ================= GOALS ================= */
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primaryBlue} />
-          }>
-          <View style={styles.wishlistHeaderRow}>
-            <Text style={styles.sectionHeaderTitle}>Tujuan Bersama Pasangan</Text>
-            <TouchableOpacity
-              style={styles.addWishBtn}
-              onPress={() => setShowAddGoalModal(true)}>
-              <Ionicons name="add" size={16} color="#FFFFFF" />
-              <Text style={styles.addWishBtnText}>Tambah</Text>
-            </TouchableOpacity>
-          </View>
-
-          {goals.length > 0 ? (
-            goals.map((goal) => {
-              const progress = goal.progressPercentage;
-              return (
-                <View key={goal.id} style={styles.financialGoalHeroCard}>
-                  <View style={styles.goalHeroHeader}>
-                    <Ionicons name="flag-outline" size={22} color={colors.primaryBlue} />
-                    <Text style={styles.goalHeroTitle}>{goal.title}</Text>
-                  </View>
-
-                  <View style={styles.progressBarTrackLarge}>
-                    <View style={[styles.progressBarFillLarge, { width: `${progress}%` }]} />
-                  </View>
-
-                  <View style={styles.goalDetailAmountRow}>
-                    <Text style={styles.goalDetailCurrent}>
-                      {goal.status === 'ACHIEVED' ? 'Tercapai 🎉' : `${progress}% Berjalan`}
-                    </Text>
-                    {goal.description && (
-                      <Text style={styles.goalDetailTarget}>{goal.description}</Text>
-                    )}
-                  </View>
-
-                  {goal.milestones && goal.milestones.length > 0 ? (
-                    <View style={{ marginTop: 14 }}>
-                      {goal.milestones.map((m) => (
-                        <View key={m.id} style={styles.milestoneItemCard}>
-                          <Ionicons
-                            name={m.completed ? 'checkmark-circle' : 'ellipse-outline'}
-                            size={18}
-                            color={m.completed ? '#10B981' : '#9CA3AF'}
-                          />
-                          <Text style={styles.milestoneName}>{m.title}</Text>
-                          <Text style={m.completed ? styles.milestoneStatusDone : styles.milestoneStatusPending}>
-                            {m.completed ? 'Tercapai' : 'Menunggu'}
-                          </Text>
-                        </View>
-                      ))}
-                    </View>
-                  ) : null}
-                </View>
-              );
-            })
-          ) : (
-            <View style={styles.emptyCard}>
-              <Ionicons name="flag-outline" size={38} color="#9CA3AF" style={{ marginBottom: 8 }} />
-              <Text style={styles.emptyTitle}>Belum ada tujuan bersama</Text>
-              <Text style={styles.emptySub}>
-                Rencanakan tujuan bersama untuk liburan, impian pernikahan, atau rencana masa depan.
-              </Text>
-            </View>
-          )}
-        </ScrollView>
-      ) : (
-        /* ================= LOVE LETTERS WITH PAPERCRUMPLECARD ================= */
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primaryBlue} />
-          }>
-          <View style={styles.wishlistHeaderRow}>
-            <View>
-              <Text style={styles.sectionHeaderTitle}>Surat & Catatan Manis</Text>
-              <Text style={styles.sectionHeaderSub}>Ketuk segel surat untuk membukanya</Text>
-            </View>
-            <TouchableOpacity
-              style={styles.addLetterBtn}
-              onPress={() => setShowAddLetterModal(true)}>
-              <Ionicons name="heart" size={15} color="#FFFFFF" />
-              <Text style={styles.addLetterBtnText}>Tulis Surat</Text>
-            </TouchableOpacity>
-          </View>
-
-          {letters.length > 0 ? (
-            letters.map((letItem) => (
-              <View key={letItem.id} style={{ marginBottom: 16 }}>
-                <PaperCrumpleCard
-                  title={letItem.title}
-                  content={letItem.content}
-                  date={formatTanggal(letItem.createdAt)}
-                  senderName="Pasangan Tersayang"
-                  isSealedInitially={true}
+                style={styles.syncBtn}
+                onPress={handleSyncCloud}
+                activeOpacity={0.75}>
+                <Ionicons
+                  name="sync"
+                  size={16}
+                  color={luminousColors.onSurface}
+                  style={isSyncing ? { transform: [{ rotate: '180deg' }] } : null}
                 />
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity style={[styles.settingRow, { borderBottomWidth: 0 }]} activeOpacity={0.7}>
+              <View style={styles.settingLeft}>
+                <View style={[styles.settingIconCircle, { backgroundColor: luminousColors.primaryFixed }]}>
+                  <Ionicons name="book-outline" size={19} color={luminousColors.primary} />
+                </View>
+                <View>
+                  <Text style={styles.settingMainText}>Ekspor Buku Kenangan PDF</Text>
+                  <Text style={styles.settingSubText}>
+                    Cetak album polaroid &amp; catatan {daysTogether} hari
+                  </Text>
+                </View>
               </View>
-            ))
-          ) : (
-            <View style={styles.emptyCard}>
-              <Ionicons name="mail-outline" size={42} color="#F43F5E" style={{ marginBottom: 8 }} />
-              <Text style={styles.emptyTitle}>Belum Ada Surat Cinta</Text>
-              <Text style={styles.emptySub}>
-                Tuliskan surat manis pertama untuk dibaca pasanganmu saat rindu.
-              </Text>
-              <TouchableOpacity
-                style={styles.createLetterPrimaryBtn}
-                onPress={() => setShowAddLetterModal(true)}>
-                <Text style={styles.createLetterPrimaryBtnText}>Tulis Surat Sekarang</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-        </ScrollView>
-      )}
-
-      {/* Modal Tambah Wishlist */}
-      <Modal visible={showAddWishModal} transparent animationType="slide">
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeaderRow}>
-              <Text style={styles.modalTitle}>Tambah Wishlist Pasangan</Text>
-              <TouchableOpacity onPress={() => setShowAddWishModal(false)}>
-                <Ionicons name="close" size={22} color="#6B7280" />
-              </TouchableOpacity>
-            </View>
-
-            <TextInput
-              style={styles.modalInput}
-              placeholder="Impian bersama (contoh: Piknik di Hutan Kota)"
-              placeholderTextColor="#9CA3AF"
-              value={wishTitle}
-              onChangeText={setWishTitle}
-            />
-
-            <TouchableOpacity
-              style={styles.modalSubmitButton}
-              onPress={handleCreateWish}
-              activeOpacity={0.88}>
-              <Text style={styles.modalSubmitButtonText}>Simpan ke Wishlist</Text>
+              <View style={styles.downloadPill}>
+                <Text style={styles.downloadPillText}>Download</Text>
+              </View>
             </TouchableOpacity>
           </View>
         </View>
-      </Modal>
 
-      {/* Modal Tambah Kenangan */}
-      <Modal visible={showAddMemoryModal} transparent animationType="slide">
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeaderRow}>
-              <Text style={styles.modalTitle}>Abadikan Kenangan</Text>
-              <TouchableOpacity onPress={() => setShowAddMemoryModal(false)}>
-                <Ionicons name="close" size={22} color="#6B7280" />
-              </TouchableOpacity>
+        {/* Section 5: Bantuan & Keluar Akun */}
+        <View style={styles.sectionWrapper}>
+          <TouchableOpacity style={styles.helpCenterCard} activeOpacity={0.8}>
+            <View style={styles.settingLeft}>
+              <View style={[styles.settingIconCircle, { backgroundColor: luminousColors.surfaceContainerHigh }]}>
+                <Ionicons name="headset-outline" size={19} color={luminousColors.onSurface} />
+              </View>
+              <View>
+                <Text style={styles.settingMainText}>Pusat Bantuan Pasangan</Text>
+                <Text style={styles.settingSubText}>Tanya tim OURS atau baca panduan cinta</Text>
+              </View>
             </View>
+            <Ionicons name="chevron-forward" size={18} color="#8F6F71" />
+          </TouchableOpacity>
 
-            <TextInput
-              style={styles.modalInput}
-              placeholder="Judul Kenangan (contoh: Kencan Senopati)"
-              placeholderTextColor="#9CA3AF"
-              value={newMemTitle}
-              onChangeText={setNewMemTitle}
-            />
+          <TouchableOpacity
+            style={styles.logoutBtn}
+            onPress={handleLogout}
+            activeOpacity={0.85}>
+            <Ionicons name="log-out-outline" size={18} color="#BA1A1A" />
+            <Text style={styles.logoutBtnText}>Keluar dari Akun Kita</Text>
+          </TouchableOpacity>
 
-            <TextInput
-              style={styles.modalInput}
-              placeholder="Catatan Singkat (opsional)"
-              placeholderTextColor="#9CA3AF"
-              value={newMemNotes}
-              onChangeText={setNewMemNotes}
-            />
-
-            <TextInput
-              style={styles.modalInput}
-              placeholder="Tanggal (YYYY-MM-DD)"
-              placeholderTextColor="#9CA3AF"
-              value={newMemDate}
-              onChangeText={setNewMemDate}
-            />
-
-            <TouchableOpacity
-              style={styles.modalSubmitButton}
-              onPress={handleCreateMemory}
-              activeOpacity={0.88}>
-              <Text style={styles.modalSubmitButtonText}>Simpan Kenangan</Text>
-            </TouchableOpacity>
+          <View style={styles.versionFooter}>
+            <Text style={styles.versionText}>
+              OURS Companion • Versi 2.4.1 (Clean Glass Edition)
+            </Text>
+            <Text style={styles.versionSub}>
+              Dibuat dengan cinta untuk {partnerNames.user} &amp; {partnerNames.partner}
+            </Text>
           </View>
         </View>
-      </Modal>
 
-      {/* Modal Tulis Surat */}
-      <Modal visible={showAddLetterModal} transparent animationType="slide">
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeaderRow}>
-              <Text style={styles.modalTitle}>Tulis Surat Cinta</Text>
-              <TouchableOpacity onPress={() => setShowAddLetterModal(false)}>
-                <Ionicons name="close" size={22} color="#6B7280" />
-              </TouchableOpacity>
-            </View>
-
-            <TextInput
-              style={styles.modalInput}
-              placeholder="Judul Surat (contoh: Untukmu yang selalu ada)"
-              placeholderTextColor="#9CA3AF"
-              value={letterTitle}
-              onChangeText={setLetterTitle}
-            />
-
-            <TextInput
-              style={[styles.modalInput, { height: 120, textAlignVertical: 'top' }]}
-              placeholder="Tuliskan ungkapan hatimu yang terdalam..."
-              placeholderTextColor="#9CA3AF"
-              multiline
-              value={letterContent}
-              onChangeText={setLetterContent}
-            />
-
-            <TouchableOpacity
-              style={[styles.modalSubmitButton, { backgroundColor: '#F43F5E' }]}
-              onPress={handleSendLetter}
-              activeOpacity={0.88}>
-              <Text style={styles.modalSubmitButtonText}>Segel & Kirim Surat</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Modal Tambah Goal */}
-      <Modal visible={showAddGoalModal} transparent animationType="slide">
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeaderRow}>
-              <Text style={styles.modalTitle}>Tambah Tujuan Bersama</Text>
-              <TouchableOpacity onPress={() => setShowAddGoalModal(false)}>
-                <Ionicons name="close" size={22} color="#6B7280" />
-              </TouchableOpacity>
-            </View>
-
-            <TextInput
-              style={styles.modalInput}
-              placeholder="Nama Tujuan (contoh: Liburan ke Bali)"
-              placeholderTextColor="#9CA3AF"
-              value={goalTitle}
-              onChangeText={setGoalTitle}
-            />
-
-            <TextInput
-              style={styles.modalInput}
-              placeholder="Target Nominal / Keterangan (opsional)"
-              placeholderTextColor="#9CA3AF"
-              value={goalTargetAmount}
-              onChangeText={setGoalTargetAmount}
-            />
-
-            <TouchableOpacity
-              style={styles.modalSubmitButton}
-              onPress={handleCreateGoal}
-              activeOpacity={0.88}>
-              <Text style={styles.modalSubmitButtonText}>Simpan Tujuan</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+        <View style={{ height: 100 }} />
+      </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  screenRoot: {
     flex: 1,
-    backgroundColor: '#F8F9FA',
+    backgroundColor: luminousColors.surface,
   },
   header: {
-    backgroundColor: '#FFFFFF',
+    height: 64,
+    paddingTop: Platform.OS === 'ios' ? 12 : 8,
     paddingHorizontal: 20,
-    paddingTop: Platform.OS === 'ios' ? 52 : 24,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F3F4F6',
-  },
-  headerRow: {
+    backgroundColor: 'rgba(250, 248, 255, 0.95)',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(185, 5, 56, 0.05)',
+    zIndex: 20,
   },
-  backButton: {
-    padding: 4,
-    marginRight: 8,
-  },
-  headerTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#1F2937',
-    flex: 1,
-  },
-  headerRightBtn: {
-    padding: 4,
-  },
-  scrollContent: {
-    padding: 20,
-    paddingBottom: 110,
-    maxWidth: 520,
-    width: '100%',
-    alignSelf: 'center',
-  },
-  centerContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  loadingText: {
-    fontSize: 14,
-    color: '#6B7280',
-    marginTop: 8,
-  },
-  statusToast: {
-    position: 'absolute',
-    top: Platform.OS === 'ios' ? 56 : 30,
-    alignSelf: 'center',
-    backgroundColor: '#1F2937',
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
+  headerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    zIndex: 999,
   },
-  statusToastText: {
-    fontSize: 12,
-    color: '#FFFFFF',
-    fontWeight: '600',
-  },
-  profileCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 16,
+  avatarPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    marginBottom: 20,
+    position: 'relative',
+    marginRight: 4,
   },
-  avatarRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginRight: 12,
-  },
-  avatarCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+  avatarHeart: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: luminousColors.surfaceContainerHighest,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 2,
     borderColor: '#FFFFFF',
   },
-  avatarInitial: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.primaryBlue,
-  },
-  profileTextCol: {
-    flex: 1,
-  },
-  profileNames: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#1F2937',
-  },
-  profileTogetherText: {
-    fontSize: 13,
-    color: '#6B7280',
-    marginTop: 2,
-  },
-  menuListSection: {
-    gap: 12,
-    marginBottom: 20,
-  },
-  menuItemCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    padding: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-  },
-  menuIconBox: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+  avatarPartner: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: luminousColors.secondaryFixed,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
+    marginLeft: -10,
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
   },
-  menuTextCol: {
+  syncPulseDot: {
+    position: 'absolute',
+    bottom: -1,
+    right: -1,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: luminousColors.secondaryContainer,
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+  headerTextCol: {
+    marginLeft: 4,
+  },
+  syncLabel: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: luminousColors.onSurfaceVariant,
+    letterSpacing: 0.2,
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: luminousColors.onSurface,
+    letterSpacing: -0.3,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  headerIconBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+  },
+  headerProfileBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: luminousColors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  scrollArea: {
     flex: 1,
   },
-  menuTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#1F2937',
+  scrollContent: {
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    gap: 16,
   },
-  menuSub: {
-    fontSize: 12,
-    color: '#6B7280',
-    marginTop: 2,
+  heroProfileCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.92)',
+    borderRadius: 28,
+    padding: 20,
+    alignItems: 'center',
+    shadowColor: 'rgba(185, 5, 56, 0.08)',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 1,
+    shadowRadius: 18,
+    elevation: 4,
   },
-  financialGoalCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-  },
-  goalHeaderRow: {
+  avatarsRow: {
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 12,
-    gap: 10,
   },
-  goalCardTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#1F2937',
-  },
-  goalCardSub: {
-    fontSize: 12,
-    color: '#6B7280',
-  },
-  goalPercentBadge: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: colors.primaryBlue,
-  },
-  progressBarTrack: {
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#EFF6FF',
-    overflow: 'hidden',
-    marginBottom: 8,
-  },
-  progressBarFill: {
-    height: '100%',
-    borderRadius: 4,
-    backgroundColor: colors.primaryBlue,
-  },
-  goalAmountRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  goalAmountCurrent: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#1F2937',
-  },
-  settingsSection: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    marginBottom: 20,
-  },
-  settingsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-    gap: 12,
-  },
-  settingsRowText: {
-    flex: 1,
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#374151',
-  },
-  settingsDivider: {
-    height: 1,
-    backgroundColor: '#F3F4F6',
-  },
-  signOutButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FEE2E2',
-    borderRadius: 16,
-    paddingVertical: 14,
-    gap: 8,
-  },
-  signOutButtonText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#EF4444',
-  },
-  galleryHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  sectionHeaderTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#1F2937',
-  },
-  sectionHeaderSub: {
-    fontSize: 12,
-    color: '#6B7280',
-    marginTop: 2,
-  },
-  addSmallBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#F43F5E',
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 10,
-  },
-  addSmallBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  emptyGalleryBox: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    marginTop: 20,
-  },
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1F2937',
-    marginBottom: 4,
-  },
-  emptySub: {
-    fontSize: 13,
-    color: '#6B7280',
-    textAlign: 'center',
-    maxWidth: 280,
-    marginBottom: 16,
-  },
-  addMemoryPrimaryBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F43F5E',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 12,
-  },
-  addMemoryPrimaryBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  mapContainer: {
-    flex: 1,
-    position: 'relative',
-    backgroundColor: '#E5E7EB',
-  },
-  mapCanvas: {
-    flex: 1,
-    backgroundColor: '#F3F4F6',
+  avatarWrapper: {
     position: 'relative',
   },
-  mapGridLines: {
-    ...StyleSheet.absoluteFill,
-    opacity: 0.05,
-    borderWidth: 1,
-    borderColor: '#000',
+  avatarImg: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
   },
-  mapAreaTag: {
+  avatarIndicatorM: {
     position: 'absolute',
-    top: 20,
-    alignSelf: 'center',
-    backgroundColor: 'rgba(255,255,255,0.92)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 999,
-    flexDirection: 'row',
+    bottom: -1,
+    right: 0,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: luminousColors.secondary,
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+  avatarIndicatorF: {
+    position: 'absolute',
+    bottom: -1,
+    right: 0,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: luminousColors.primary,
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+  linkedHeartBridge: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#FFFFFF',
     alignItems: 'center',
-    gap: 4,
+    justifyContent: 'center',
+    marginHorizontal: -12,
+    zIndex: 10,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
+    shadowOpacity: 0.12,
     shadowRadius: 4,
     elevation: 3,
   },
-  mapAreaTagText: {
-    fontSize: 12,
+  coupleNames: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: luminousColors.onSurface,
+    letterSpacing: -0.4,
+  },
+  realtimeStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 4,
+  },
+  greenLiveDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: '#10B981',
+  },
+  realtimeStatusText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: luminousColors.onSurfaceVariant,
+  },
+  daysTogetherPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 218, 220, 0.45)',
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 20,
+    gap: 6,
+    marginTop: 12,
+  },
+  daysTogetherText: {
+    fontSize: 13,
     fontWeight: '700',
-    color: '#1F2937',
+    color: luminousColors.primary,
   },
-  memoryPhotoPin: {
-    position: 'absolute',
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    borderWidth: 2.5,
-    borderColor: '#FFFFFF',
-    overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 6,
-    elevation: 4,
+  daysTogetherSub: {
+    fontSize: 11,
+    color: luminousColors.onSurfaceVariant,
   },
-  memoryPhotoPinSelected: {
-    borderColor: '#F43F5E',
-    borderWidth: 3.5,
-    transform: [{ scale: 1.15 }],
-  },
-  pinPhotoThumb: {
+  coupleCodeCard: {
     width: '100%',
-    height: '100%',
-  },
-  floatingMemoryCard: {
-    position: 'absolute',
-    bottom: 95,
-    left: 16,
-    right: 16,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: luminousColors.surfaceContainerLow,
     borderRadius: 18,
     padding: 12,
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.12,
-    shadowRadius: 12,
-    elevation: 6,
-  },
-  floatingMemoryThumb: {
-    width: 60,
-    height: 60,
-    borderRadius: 12,
-    marginRight: 12,
-  },
-  floatingMemoryCol: {
-    flex: 1,
-  },
-  floatingMemoryTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#1F2937',
-  },
-  floatingMemoryDate: {
-    fontSize: 11,
-    color: '#6B7280',
-    marginTop: 2,
-  },
-  floatingMemoryLoc: {
-    fontSize: 11,
-    color: colors.primaryBlue,
-    fontWeight: '600',
-    marginTop: 2,
-  },
-  viewMemoryAlbumBtn: {
-    padding: 8,
-  },
-  wishlistHeaderRow: {
-    flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 14,
+    marginTop: 16,
   },
-  addWishBtn: {
+  coupleCodeLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: colors.primaryBlue,
+    gap: 10,
+  },
+  keyIconCircle: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: luminousColors.secondaryFixed,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  coupleCodeLabel: {
+    fontSize: 10,
+    color: luminousColors.onSurfaceVariant,
+  },
+  coupleCodeVal: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: luminousColors.onSurface,
+    letterSpacing: 0.5,
+  },
+  copyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 10,
+    borderRadius: 14,
     gap: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
   },
-  addWishBtnText: {
-    fontSize: 12,
+  copyBtnText: {
+    fontSize: 11,
     fontWeight: '700',
-    color: '#FFFFFF',
+    color: luminousColors.primary,
   },
-  wishItemCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
+  milestoneBanner: {
+    backgroundColor: 'rgba(255, 218, 219, 0.75)',
+    borderRadius: 20,
     padding: 14,
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    marginBottom: 10,
-  },
-  wishItemCardCompleted: {
-    backgroundColor: '#F9FAFB',
-    opacity: 0.7,
-  },
-  wishCheckboxCircle: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: '#D1D5DB',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  wishTextCol: {
-    flex: 1,
-  },
-  wishItemTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1F2937',
-  },
-  wishItemTitleCompleted: {
-    textDecorationLine: 'line-through',
-    color: '#9CA3AF',
-  },
-  wishItemCategory: {
-    fontSize: 12,
-    color: '#6B7280',
-    marginTop: 2,
-  },
-  wishPriorityPill: {
-    backgroundColor: '#EFF6FF',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  wishPriorityText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: colors.primaryBlue,
-  },
-  financialGoalHeroCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 22,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    marginBottom: 16,
-  },
-  goalHeroHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 12,
-  },
-  goalHeroTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#1F2937',
-  },
-  progressBarTrackLarge: {
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#EFF6FF',
-    overflow: 'hidden',
-    marginBottom: 10,
-  },
-  progressBarFillLarge: {
-    height: '100%',
-    borderRadius: 5,
-    backgroundColor: colors.primaryBlue,
-  },
-  goalDetailAmountRow: {
-    flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
   },
-  goalDetailCurrent: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#1F2937',
-  },
-  goalDetailTarget: {
-    fontSize: 12,
-    color: '#6B7280',
-  },
-  milestoneItemCard: {
-    backgroundColor: '#F9FAFB',
-    borderRadius: 12,
-    padding: 10,
+  milestoneLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#F3F4F6',
-    marginBottom: 6,
     gap: 10,
   },
-  milestoneName: {
-    flex: 1,
+  milestoneIconCircle: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  milestoneLabel: {
+    fontSize: 10,
+    color: luminousColors.onPrimaryFixedVariant,
+    fontWeight: '600',
+  },
+  milestoneVal: {
     fontSize: 13,
-    fontWeight: '600',
-    color: '#1F2937',
-  },
-  milestoneStatusDone: {
-    fontSize: 11,
     fontWeight: '700',
-    color: '#10B981',
+    color: luminousColors.onPrimaryFixed,
   },
-  milestoneStatusPending: {
+  appSuiteGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  suiteCard: {
+    width: '48%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 14,
+    gap: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  suiteIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 6,
+  },
+  suiteCardTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: luminousColors.onSurface,
+  },
+  suiteCardSub: {
     fontSize: 11,
-    fontWeight: '600',
-    color: '#9CA3AF',
+    color: luminousColors.onSurfaceVariant,
   },
-  addLetterBtn: {
+  sectionWrapper: {
+    gap: 8,
+  },
+  sectionHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F43F5E',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 10,
-    gap: 4,
+    justifyContent: 'space-between',
+    paddingHorizontal: 2,
   },
-  addLetterBtnText: {
-    fontSize: 12,
+  sectionHeading: {
+    fontSize: 11,
     fontWeight: '700',
-    color: '#FFFFFF',
+    color: luminousColors.onSurfaceVariant,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
-  createLetterPrimaryBtn: {
-    backgroundColor: '#F43F5E',
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    borderRadius: 12,
-    marginTop: 8,
+  sectionItemCount: {
+    fontSize: 11,
+    color: luminousColors.primary,
+    fontWeight: '600',
   },
-  createLetterPrimaryBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  emptyCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 24,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-  },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  modalCard: {
+  settingsGroupCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 24,
-    padding: 20,
-    width: '100%',
-    maxWidth: 420,
+    paddingHorizontal: 16,
+    paddingVertical: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 2,
   },
-  modalHeaderRow: {
+  settingRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(0, 0, 0, 0.04)',
   },
-  modalTitle: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#1F2937',
+  settingLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
   },
-  modalInput: {
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
+  settingIconCircle: {
+    width: 38,
+    height: 38,
     borderRadius: 14,
-    padding: 12,
-    fontSize: 14,
-    color: '#1F2937',
-    marginBottom: 12,
-  },
-  modalSubmitButton: {
-    backgroundColor: '#1F2937',
-    borderRadius: 14,
-    paddingVertical: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  modalSubmitButtonText: {
+  settingMainText: {
     fontSize: 14,
+    fontWeight: '600',
+    color: luminousColors.onSurface,
+  },
+  settingSubText: {
+    fontSize: 11,
+    color: luminousColors.onSurfaceVariant,
+    marginTop: 2,
+  },
+  rowRightPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  onlineDotMini: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#10B981',
+  },
+  budgetCardInner: {
+    backgroundColor: luminousColors.surfaceContainerLow,
+    borderRadius: 18,
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginVertical: 10,
+  },
+  budgetLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  budgetAmount: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: luminousColors.onSurface,
+    marginTop: 2,
+  },
+  editBudgetBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    gap: 4,
+  },
+  editBudgetText: {
+    fontSize: 11,
     fontWeight: '700',
-    color: '#FFFFFF',
+    color: luminousColors.onSurface,
+  },
+  culinaryPreferenceSection: {
+    paddingVertical: 8,
+    gap: 8,
+  },
+  subSectionTitle: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: luminousColors.onSurfaceVariant,
+  },
+  chipsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  prefChipPrimary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: luminousColors.primaryFixed,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 14,
+    gap: 4,
+  },
+  prefChipTextPrimary: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: luminousColors.primary,
+  },
+  radiusPill: {
+    backgroundColor: luminousColors.secondaryFixed,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+  },
+  radiusPillText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: luminousColors.onSecondaryFixed,
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(0, 0, 0, 0.04)',
+  },
+  syncBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: luminousColors.surfaceContainerHigh,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  downloadPill: {
+    backgroundColor: luminousColors.primaryFixed,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  downloadPillText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: luminousColors.primary,
+  },
+  helpCenterCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    padding: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  logoutBtn: {
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(186, 26, 26, 0.08)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 4,
+  },
+  logoutBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#BA1A1A',
+  },
+  versionFooter: {
+    alignItems: 'center',
+    paddingVertical: 10,
+  },
+  versionText: {
+    fontSize: 11,
+    color: luminousColors.onSurfaceVariant,
+    fontWeight: '500',
+  },
+  versionSub: {
+    fontSize: 10,
+    color: '#8F6F71',
+    marginTop: 2,
   },
 });

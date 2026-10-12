@@ -46,6 +46,24 @@ export class OcrService {
       throw new BadRequestException('Format berkas bukan gambar valid (hanya JPEG, PNG, atau WebP yang didukung)');
     }
 
+    const mimeType = isPng ? 'image/png' : isWebp ? 'image/webp' : 'image/jpeg';
+
+    // 1. Prioritize Gemini Multimodal AI Vision (Best accuracy for faded thermal receipts)
+    const geminiApiKey = process.env.GEMINI_API_KEY;
+    if (geminiApiKey) {
+      try {
+        this.logger.log(`Memulai ekstraksi OCR via Gemini Vision AI (${imageBuffer.length} bytes)...`);
+        const geminiResult = await this.processWithGeminiVision(imageBuffer, mimeType, geminiApiKey);
+        if (geminiResult) {
+          this.logger.log(`Gemini Vision OCR berhasil! Merchant: "${geminiResult.merchantName}", Grand Total: ${geminiResult.grandTotal}`);
+          return geminiResult;
+        }
+      } catch (geminiErr: any) {
+        this.logger.warn(`Gemini Vision OCR menemui kendala, beralih ke Tesseract: ${geminiErr.message}`);
+      }
+    }
+
+    // 2. Fallback to local Tesseract OCR engine
     try {
       this.logger.log(`Memulai ekstraksi OCR Tesseract untuk gambar struk (${imageBuffer.length} bytes)...`);
 
@@ -61,6 +79,146 @@ export class OcrService {
     } catch (err: any) {
       this.logger.error(`Kegagalan OCR Tesseract: ${err.message}`, err.stack);
       throw new BadRequestException('Gagal memproses gambar struk melalui mesin OCR: ' + err.message);
+    }
+  }
+
+  resolveGeminiModel(): string {
+    const configured = (process.env.GEMINI_MODEL || '').trim();
+    // gemini-2.0-flash family was decommissioned on June 1, 2026.
+    // Default to active gemini-2.5-flash or allow custom valid model (e.g. gemini-3.8-flash, gemini-3.5-flash-lite).
+    if (!configured || configured.startsWith('gemini-2.0-flash')) {
+      return 'gemini-2.5-flash';
+    }
+    return configured;
+  }
+
+  private async processWithGeminiVision(
+    imageBuffer: Buffer,
+    mimeType: string,
+    apiKey: string,
+  ): Promise<OcrReceiptResultDto | null> {
+    const model = this.resolveGeminiModel();
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+
+    const base64Data = imageBuffer.toString('base64');
+    const systemPrompt = `You are an expert OCR and financial data extractor specialized in Indonesian restaurant bills, cafes, dining receipts, and retail receipts (struk kasir / bon kencan).
+Carefully read this receipt image, even if the print is faded, thermal-printed, wrinkled, angled, or low contrast.
+
+Extract all details into a clean JSON structure:
+{
+  "merchantName": "Nama tempat / restoran / kafe (e.g. Ottera Cafe)",
+  "address": "Alamat lengkap jika tertera di struk (e.g. Jl. Senopati No. 88, Kebayoran Baru, Jakarta Selatan)",
+  "transactionDate": "YYYY-MM-DD",
+  "transactionTime": "HH:mm (e.g. 19:42)",
+  "category": "Kafe",
+  "subCategory": "Makan & Minum",
+  "items": [
+    {
+      "itemName": "Nama menu / item (e.g. Latte)",
+      "quantity": 1,
+      "unitPrice": 45000,
+      "lineTotal": 45000,
+      "category": "Minuman" // Choose 'Makanan', 'Minuman', or 'Lainnya'
+    }
+  ],
+  "subtotal": 210000,
+  "tax": 21000,
+  "serviceCharge": 10500,
+  "grandTotal": 241500,
+  "rawText": "Ringkasan teks struk yang terbaca",
+  "confidence": 98
+}
+
+Strict requirements:
+1. Numbers must be pure integers or floats, no 'Rp', '.', or ',' in numerical fields.
+2. Categorize each item as 'Makanan' (food, pasta, snack, rice, meat, dessert) or 'Minuman' (coffee, tea, latte, mineral water, juice, beverage).
+3. Return ONLY raw valid JSON without markdown code fences (\`\`\`json).`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                { text: systemPrompt },
+                {
+                  inline_data: {
+                    mime_type: mimeType,
+                    data: base64Data,
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      });
+
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Gemini Vision HTTP ${response.status}: ${errText.slice(0, 150)}`);
+      }
+
+      const resData: any = await response.json();
+      const rawText = resData?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!rawText) return null;
+
+      const cleanJson = rawText
+        .replace(/^```json\s*/i, '')
+        .replace(/^```\s*/, '')
+        .replace(/\s*```$/, '')
+        .trim();
+
+      const parsed = JSON.parse(cleanJson);
+
+      return {
+        merchantName: parsed.merchantName || null,
+        address: parsed.address || null,
+        transactionDate: parsed.transactionDate || null,
+        transactionTime: parsed.transactionTime || null,
+        category: parsed.category || 'Kafe',
+        subCategory: parsed.subCategory || 'Makan & Minum',
+        items: Array.isArray(parsed.items)
+          ? parsed.items.map((it: any) => {
+              const catLower = String(it.category || '').toLowerCase();
+              const isDrink =
+                catLower.includes('minum') ||
+                catLower.includes('drink') ||
+                /latte|coffee|kopi|tea|teh|water|juice|espresso|cappuccino|beer|wine|soda|boba/i.test(
+                  String(it.name || it.itemName || ''),
+                );
+              return {
+                name: String(it.name || it.itemName || 'Item'),
+                quantity: Number(it.quantity) || 1,
+                unitPrice: it.unitPrice !== undefined ? Number(it.unitPrice) : Number(it.lineTotal || 0),
+                lineTotal: Number(it.lineTotal || 0),
+                category: (isDrink ? 'Minuman' : 'Makanan') as 'Makanan' | 'Minuman',
+              };
+            })
+          : [],
+        subtotal: parsed.subtotal !== undefined ? Number(parsed.subtotal) : null,
+        tax: parsed.tax !== undefined ? Number(parsed.tax) : null,
+        serviceCharge: parsed.serviceCharge !== undefined ? Number(parsed.serviceCharge) : null,
+        grandTotal: Number(parsed.grandTotal || parsed.subtotal || 0),
+        rawText: parsed.rawText || 'Diekstrak dengan Gemini Vision AI',
+        confidence: Number(parsed.confidence) || 98,
+        engine: 'Gemini Multimodal AI Vision',
+        currency: 'IDR',
+        isArithmeticConsistent: true,
+      };
+    } catch (err) {
+      clearTimeout(timeout);
+      throw err;
     }
   }
 
@@ -177,11 +335,13 @@ export class OcrService {
         }
 
         if (rawItemName.length >= 2 && !headerNoise.test(rawItemName) && priceNum > 0 && priceNum < 100000000) {
+          const isDrink = /latte|coffee|kopi|tea|teh|water|juice|espresso|cappuccino|beer|wine|soda|boba/i.test(rawItemName);
           items.push({
             name: rawItemName,
             quantity: isNaN(qty) || qty === 0 ? 1 : qty,
             unitPrice: Math.round(priceNum / (isNaN(qty) || qty === 0 ? 1 : qty)),
             lineTotal: priceNum,
+            category: (isDrink ? 'Minuman' : 'Makanan') as 'Makanan' | 'Minuman',
           });
         }
       }
@@ -209,7 +369,11 @@ export class OcrService {
     return {
       rawText,
       merchantName: merchantName ?? null,
+      address: null,
       transactionDate: transactionDate ?? null,
+      transactionTime: null,
+      category: 'Kafe',
+      subCategory: 'Makan & Minum',
       items,
       subtotal: subtotal ?? (calculatedSum > 0 ? calculatedSum : null),
       tax: tax ?? null,

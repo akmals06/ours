@@ -1,938 +1,1056 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  ActivityIndicator,
+  Animated,
   Image,
-  Modal,
   Platform,
-  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
+  ActivityIndicator,
 } from 'react-native';
-import { colors } from '@ours/design-tokens';
-import { api } from '@/services/api';
-import { PlaceItem, SavedPlaceItem } from '@ours/contracts';
+import { useRouter } from 'expo-router';
+import { luminousColors } from '@ours/design-tokens';
 import { Ionicons } from '@expo/vector-icons';
-import { OptionWheel, OptionWheelItem } from '@/components/free-components/OptionWheel';
+import { SettingsDrawerModal } from '@/components/SettingsDrawerModal';
+import { api } from '@/services/api';
+import { PlaceItem } from '@ours/contracts';
+import { useCoupleData } from '@/context/couple-data-context';
 
-const AREA_FILTERS = [
-  'Semua Wilayah',
-  'Jakarta Selatan',
-  'Jakarta Pusat',
-  'Jakarta Barat',
-  'Jakarta Utara',
-  'Jakarta Timur',
-  'Bandung',
-  'Bali',
-  'Surabaya',
-  'Yogyakarta',
-  'Medan',
-  'Semarang',
-  'Makassar',
-  'Malang',
-  'Bogor',
-  'Solo',
-];
+const DEFAULT_CATEGORY_IMAGES: Record<string, string> = {
+  dining:
+    'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=800&auto=format&fit=crop&q=80',
+  cafe:
+    'https://images.unsplash.com/photo-1501339847302-ac426a4a7cbb?w=800&auto=format&fit=crop&q=80',
+  park:
+    'https://images.unsplash.com/photo-1519331379826-f10be5486c6f?w=800&auto=format&fit=crop&q=80',
+  art:
+    'https://images.unsplash.com/photo-1536924940846-227afb31e2a5?w=800&auto=format&fit=crop&q=80',
+  default:
+    'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=800&auto=format&fit=crop&q=80',
+};
 
-const CATEGORY_OPTIONS: OptionWheelItem[] = [
-  { id: 'Semua', label: 'Semua', icon: 'grid-outline', color: colors.primaryBlue },
-  { id: 'Kuliner', label: 'Restoran', icon: 'restaurant-outline', color: '#EA580C' },
-  { id: 'Kafe', label: 'Kafe Romantis', icon: 'cafe-outline', color: '#D97706' },
-  { id: 'Alam', label: 'Taman & Alam', icon: 'leaf-outline', color: '#16A34A' },
-  { id: 'Budaya', label: 'Seni & Museum', icon: 'business-outline', color: '#7C3AED' },
-  { id: 'Aktivitas', label: 'Aktivitas Berdua', icon: 'sparkles-outline', color: '#DB2777' },
-  { id: 'Hiburan Malam', label: 'Lounge & Musik', icon: 'musical-notes-outline', color: '#4F46E5' },
-];
+function getPlaceImage(place: PlaceItem): string {
+  if (place.metadata?.photoUrl) return place.metadata.photoUrl;
+  if (place.metadata?.image) return place.metadata.image;
+  const cat = (place.category || '').toLowerCase();
+  if (cat.includes('fine') || cat.includes('dining') || cat.includes('resto') || cat.includes('makan')) {
+    return DEFAULT_CATEGORY_IMAGES.dining;
+  }
+  if (cat.includes('cafe') || cat.includes('kafe') || cat.includes('kopi') || cat.includes('coffee')) {
+    return DEFAULT_CATEGORY_IMAGES.cafe;
+  }
+  if (cat.includes('taman') || cat.includes('alam') || cat.includes('park') || cat.includes('piknik')) {
+    return DEFAULT_CATEGORY_IMAGES.park;
+  }
+  if (cat.includes('galeri') || cat.includes('seni') || cat.includes('art') || cat.includes('museum')) {
+    return DEFAULT_CATEGORY_IMAGES.art;
+  }
+  return DEFAULT_CATEGORY_IMAGES.default;
+}
 
-export default function ExploreScreen() {
-  const [activeTab, setActiveTab] = useState<'list' | 'map' | 'saved'>('list');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedArea, setSelectedArea] = useState('Semua Wilayah');
-  const [selectedCategory, setSelectedCategory] = useState('Semua');
+export default function ExploreTabScreen() {
+  const router = useRouter();
+  const { partnerNames } = useCoupleData();
 
   const [places, setPlaces] = useState<PlaceItem[]>([]);
-  const [savedPlaces, setSavedPlaces] = useState<SavedPlaceItem[]>([]);
-  const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [activeCategory, setActiveCategory] = useState<string>('Semua');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [bookmarkedIds, setBookmarkedIds] = useState<Record<string, boolean>>({});
+  const [showSettingsDrawer, setShowSettingsDrawer] = useState<boolean>(false);
 
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  // Surprise Generator State
+  const [surprisePlace, setSurprisePlace] = useState<PlaceItem | null>(null);
+  const spinAnim = useRef(new Animated.Value(0)).current;
 
-  // Detail Modal State
-  const [selectedDetailPlace, setSelectedDetailPlace] = useState<PlaceItem | null>(null);
-  const [selectedPinPlace, setSelectedPinPlace] = useState<PlaceItem | null>(null);
-
-  const fetchPlaces = useCallback(async () => {
+  // Fetch real places from backend (backed by OpenStreetMap / Nominatim)
+  const fetchPlaces = useCallback(async (queryStr?: string, categoryStr?: string) => {
+    setIsLoading(true);
     try {
-      setError(null);
-      if (activeTab === 'saved') {
-        const savedRes = await api.places.getSaved();
-        setSavedPlaces(savedRes);
-        setSavedIds(new Set(savedRes.map((s) => s.placeId)));
-      } else {
-        const areaQuery = selectedArea !== 'Semua Wilayah' ? selectedArea : '';
-        const combinedQuery = [searchQuery.trim(), areaQuery].filter(Boolean).join(' ') || undefined;
+      const cleanCat =
+        categoryStr && categoryStr !== 'Semua'
+          ? categoryStr.replace(/[^\w\s]/gi, '').trim()
+          : undefined;
 
-        const [placesRes, savedRes] = await Promise.all([
-          api.places.search({
-            query: combinedQuery,
-            category: selectedCategory === 'Semua' ? undefined : selectedCategory,
-          }),
-          api.places.getSaved().catch(() => []),
-        ]);
-        setPlaces(placesRes);
-        setSavedIds(new Set(savedRes.map((s) => s.placeId)));
-        if (placesRes.length > 0 && !selectedPinPlace) {
-          setSelectedPinPlace(placesRes[0]);
-        }
+      const results = await api.places.search({
+        query: queryStr?.trim() || undefined,
+        category: cleanCat,
+      });
+
+      const list = results || [];
+      setPlaces(list);
+      if (list.length > 0) {
+        setSurprisePlace(list[Math.floor(Math.random() * list.length)]);
+      } else {
+        setSurprisePlace(null);
       }
-    } catch (err: any) {
-      setError(err?.message || 'Gagal memuat tempat kencan');
+    } catch {
+      setPlaces([]);
+      setSurprisePlace(null);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      setIsLoading(false);
     }
-  }, [activeTab, searchQuery, selectedCategory, selectedArea]);
+  }, []);
 
   useEffect(() => {
-    fetchPlaces();
-  }, [fetchPlaces]);
+    let isCancelled = false;
+    const timer = setTimeout(async () => {
+      setIsLoading(true);
+      try {
+        const cleanCat =
+          activeCategory && activeCategory !== 'Semua'
+            ? activeCategory.replace(/[^\w\s]/gi, '').trim()
+            : undefined;
 
-  const onRefresh = () => {
-    setRefreshing(true);
-    fetchPlaces();
+        const results = await api.places.search({
+          query: searchQuery?.trim() || undefined,
+          category: cleanCat,
+        });
+
+        if (!isCancelled) {
+          const list = results || [];
+          setPlaces(list);
+          if (list.length > 0) {
+            setSurprisePlace(list[Math.floor(Math.random() * list.length)]);
+          } else {
+            setSurprisePlace(null);
+          }
+        }
+      } catch {
+        if (!isCancelled) {
+          setPlaces([]);
+          setSurprisePlace(null);
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsLoading(false);
+        }
+      }
+    }, 350);
+
+    return () => {
+      isCancelled = true;
+      clearTimeout(timer);
+    };
+  }, [searchQuery, activeCategory]);
+
+  // Load saved places to reflect user's real bookmarks
+  useEffect(() => {
+    api.places
+      .getSaved()
+      .then((savedList) => {
+        const map: Record<string, boolean> = {};
+        (savedList || []).forEach((item) => {
+          map[item.placeId] = true;
+        });
+        setBookmarkedIds(map);
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleSearchSubmit = () => {
+    fetchPlaces(searchQuery, activeCategory);
   };
 
-  const handleToggleSave = async (place: PlaceItem) => {
-    const isSaved = savedIds.has(place.id);
+  const handleShuffleIdea = () => {
+    Animated.timing(spinAnim, {
+      toValue: 1,
+      duration: 500,
+      useNativeDriver: true,
+    }).start(() => spinAnim.setValue(0));
+
+    if (places.length > 0) {
+      const nextIdx = Math.floor(Math.random() * places.length);
+      setSurprisePlace(places[nextIdx]);
+    } else {
+      fetchPlaces(searchQuery, activeCategory);
+    }
+  };
+
+  const toggleBookmark = async (place: PlaceItem) => {
+    const isCurrentlySaved = !!bookmarkedIds[place.id];
+    setBookmarkedIds((prev) => ({ ...prev, [place.id]: !isCurrentlySaved }));
+
     try {
-      if (isSaved) {
+      if (isCurrentlySaved) {
         await api.places.unsave(place.id);
-        setSavedIds((prev) => {
-          const next = new Set(prev);
-          next.delete(place.id);
-          return next;
-        });
-        setStatusMessage(`"${place.name}" dihapus dari favorit`);
       } else {
         await api.places.save({ placeId: place.id });
-        setSavedIds((prev) => new Set([...prev, place.id]));
-        setStatusMessage(`"${place.name}" disimpan ke tempat favorit!`);
       }
-    } catch (err: any) {
-      setStatusMessage(err?.message || 'Gagal memperbarui status favorit');
+    } catch {
+      // Revert if request fails
+      setBookmarkedIds((prev) => ({ ...prev, [place.id]: isCurrentlySaved }));
     }
   };
 
-  const handleAddToPlan = async (place: PlaceItem) => {
-    try {
-      await api.wishlist.create({
-        title: `Kencan di ${place.name}`,
-        category: place.category || 'Kencan',
-        description: place.address || undefined,
-      });
-      setStatusMessage(`"${place.name}" berhasil ditambahkan ke wishlist kencan!`);
-      setSelectedDetailPlace(null);
-    } catch (err: any) {
-      setStatusMessage(err?.message || 'Gagal menambahkan ke wishlist');
-    }
-  };
-
-  // Places are fetched directly from search API with combined queries (area + keyword)
-  const displayedPlaces = places;
-
-  const getPlaceImage = (place: PlaceItem): string => {
-    return (
-      place.metadata?.imageUrl ||
-      place.metadata?.image ||
-      'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=700&q=80'
-    );
-  };
-
-  const getPlaceRating = (place: PlaceItem): string | null => {
-    const r = place.metadata?.rating;
-    return typeof r === 'number' ? r.toFixed(1) : (r ? `${r}` : null);
-  };
-
-  const getPlacePrice = (place: PlaceItem): string | null => {
-    return place.metadata?.priceLevel || place.metadata?.priceRange || null;
-  };
-
-  const getPlaceHours = (place: PlaceItem): string | null => {
-    return place.metadata?.openingHours || place.metadata?.bestTime || null;
-  };
+  const spin = spinAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '360deg'],
+  });
 
   return (
-    <View style={styles.container}>
-      {/* 1. Header & Controls */}
-      <View style={styles.header}>
-        <View style={styles.headerTitleRow}>
-          <View>
-            <Text style={styles.screenTitle}>
-              {selectedArea === 'Semua Wilayah' ? 'Jelajahi Indonesia' : `Jelajahi ${selectedArea}`}
+    <View style={styles.screenRoot}>
+      {/* ---------------- Header Bar ---------------- */}
+      <View style={styles.headerBar}>
+        <View style={styles.headerLeft}>
+          <View style={styles.headerAvatarOverlap}>
+            <View style={styles.headerIconCircle1}>
+              <Ionicons name="heart" size={17} color={luminousColors.primary} />
+            </View>
+            <View style={styles.headerIconCircle2}>
+              <Ionicons name="compass" size={16} color={luminousColors.secondary} />
+            </View>
+            <View style={styles.syncedDot} />
+          </View>
+          <View style={styles.headerTitles}>
+            <Text style={styles.headerSyncText}>
+              OURS <Text style={styles.headerSyncDot}>•</Text> Synced
             </Text>
-            <Text style={styles.screenSubtitle}>Temukan tempat kencan romantis untuk momen berdua</Text>
+            <Text style={styles.headerMainTitle}>Jelajah</Text>
           </View>
-          <View style={styles.viewToggleGroup}>
+        </View>
+
+        <View style={styles.headerRight}>
+          <TouchableOpacity
+            style={styles.headerIconBtn}
+            onPress={() => setShowSettingsDrawer(true)}
+            activeOpacity={0.75}
+            accessibilityLabel="Notifikasi">
+            <Ionicons name="notifications-outline" size={22} color={luminousColors.onSurfaceVariant} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.profileBadge}
+            onPress={() => setShowSettingsDrawer(true)}
+            activeOpacity={0.8}
+            accessibilityLabel="Profil">
+            <Ionicons name="person" size={16} color="#FFFFFF" />
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}>
+        {/* ---------------- Location & Search Bar ---------------- */}
+        <View style={styles.searchSection}>
+          <View style={styles.locationRow}>
+            <View style={styles.locationGroup}>
+              <Ionicons name="location" size={17} color={luminousColors.primary} />
+              <Text style={styles.locationText}>Jakarta &amp; Sekitarnya</Text>
+            </View>
+            <View style={styles.curatedBadge}>
+              <Text style={styles.curatedBadgeText}>
+                {places.length > 0 ? `${places.length} Lokasi Aktif` : 'OpenStreetMap'}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.searchBar}>
+            <Ionicons name="search" size={20} color={luminousColors.onSurfaceVariant} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Cari tempat kencan nyata..."
+              placeholderTextColor="#8F6F71"
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              onSubmitEditing={handleSearchSubmit}
+              returnKeyType="search"
+            />
             <TouchableOpacity
-              style={[styles.toggleBtn, activeTab === 'list' && styles.toggleBtnActive]}
-              onPress={() => setActiveTab('list')}>
-              <Ionicons
-                name="list"
-                size={16}
-                color={activeTab === 'list' ? '#FFFFFF' : '#4B5563'}
-              />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.toggleBtn, activeTab === 'map' && styles.toggleBtnActive]}
-              onPress={() => setActiveTab('map')}>
-              <Ionicons
-                name="map"
-                size={16}
-                color={activeTab === 'map' ? '#FFFFFF' : '#4B5563'}
-              />
+              style={styles.filterBtn}
+              onPress={() => router.push('/explore/map' as any)}
+              activeOpacity={0.8}>
+              <Ionicons name="map-outline" size={18} color={luminousColors.primary} />
             </TouchableOpacity>
           </View>
         </View>
 
-        {/* 2. Search Bar */}
-        <View style={styles.searchBarContainer}>
-          <Ionicons name="search" size={18} color="#9CA3AF" style={{ marginRight: 8 }} />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Cari kafe, restoran, taman, atau aktivitas..."
-            placeholderTextColor="#9CA3AF"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            returnKeyType="search"
-          />
-          {searchQuery ? (
-            <TouchableOpacity onPress={() => setSearchQuery('')}>
-              <Ionicons name="close-circle" size={16} color="#9CA3AF" />
-            </TouchableOpacity>
-          ) : null}
-        </View>
-
-        {/* 3. React Bits OptionWheel for Categories */}
-        <OptionWheel
-          options={CATEGORY_OPTIONS}
-          selectedId={selectedCategory}
-          onSelect={(id) => setSelectedCategory(id)}
-        />
-
-        {/* 4. Area Pills Scroll */}
+        {/* ---------------- Filter Chips ---------------- */}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.areaScrollContainer}>
-          {AREA_FILTERS.map((area) => (
-            <TouchableOpacity
-              key={area}
-              style={[styles.areaPill, selectedArea === area && styles.areaPillActive]}
-              onPress={() => setSelectedArea(area)}
-              activeOpacity={0.8}>
-              <Text style={[styles.areaText, selectedArea === area && styles.areaTextActive]}>
-                {area}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
-
-      {/* Status Toast */}
-      {statusMessage && (
-        <View style={styles.statusToast}>
-          <Text style={styles.statusToastText}>{statusMessage}</Text>
-          <TouchableOpacity onPress={() => setStatusMessage(null)}>
-            <Ionicons name="close" size={16} color="#FFFFFF" />
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {/* Main Content Area */}
-      {loading && !refreshing ? (
-        <View style={styles.centerContainer}>
-          <ActivityIndicator size="large" color={colors.primaryBlue} />
-          <Text style={styles.loadingText}>Mencari tempat kencan romantis...</Text>
-        </View>
-      ) : activeTab === 'map' ? (
-        /* Map View with Pin Synchronization */
-        <View style={styles.mapViewContainer}>
-          <View style={styles.mapCanvas}>
-            <View style={styles.mapGridLines} />
-            <View style={styles.mapAreaLabelBox}>
-              <Text style={styles.mapAreaText}>Jakarta Pusat</Text>
-            </View>
-            <View style={[styles.mapAreaLabelBox, { top: '65%', left: '45%' }]}>
-              <Text style={styles.mapAreaText}>SCBD / Senopati</Text>
-            </View>
-
-            {/* Pinned Places */}
-            {displayedPlaces.map((place, idx) => {
-              const isSelected = selectedPinPlace?.id === place.id;
-              const topPos = 20 + ((idx * 27) % 55) + '%';
-              const leftPos = 15 + ((idx * 33) % 65) + '%';
+          contentContainerStyle={styles.chipsScroll}>
+          {['Semua', '🍽️ Fine Dining', '☕ Kafe Santai', '🌿 Piknik Alam', '🎨 Galeri Seni'].map(
+            (cat) => {
+              const isActive = activeCategory === cat;
               return (
                 <TouchableOpacity
-                  key={place.id}
-                  style={[
-                    styles.mapPinBubble,
-                    { top: topPos as any, left: leftPos as any },
-                    isSelected && styles.mapPinBubbleSelected,
-                  ]}
-                  onPress={() => setSelectedPinPlace(place)}
+                  key={cat}
+                  style={[styles.chipItem, isActive && styles.chipItemActive]}
+                  onPress={() => setActiveCategory(cat)}
                   activeOpacity={0.85}>
-                  <Image source={{ uri: getPlaceImage(place) }} style={styles.mapPinImage} />
-                  {isSelected && <View style={styles.mapPinPulse} />}
+                  <Text style={[styles.chipText, isActive && styles.chipTextActive]}>
+                    {cat}
+                  </Text>
                 </TouchableOpacity>
               );
-            })}
+            },
+          )}
+        </ScrollView>
+
+        {/* ---------------- Surprise Date Generator ---------------- */}
+        <View style={styles.generatorCard}>
+          <View style={styles.generatorHeaderRow}>
+            <View style={styles.generatorTitleGroup}>
+              <View style={styles.diceIconBg}>
+                <Ionicons name="dice" size={18} color={luminousColors.primary} />
+              </View>
+              <Text style={styles.generatorKicker}>SURPRISE DATE GENERATOR</Text>
+            </View>
+            <View style={styles.spontanBadge}>
+              <Text style={styles.spontanBadgeText}>Berdua Lebih Spontan</Text>
+            </View>
           </View>
 
-          {/* Floating Selected Card */}
-          {selectedPinPlace && (
-            <TouchableOpacity
-              style={styles.floatingMapCard}
-              onPress={() => setSelectedDetailPlace(selectedPinPlace)}
-              activeOpacity={0.9}>
-              <Image source={{ uri: getPlaceImage(selectedPinPlace) }} style={styles.floatingMapCardThumb} />
-              <View style={styles.floatingMapCardCol}>
-                <Text style={styles.floatingMapCardTitle} numberOfLines={1}>
-                  {selectedPinPlace.name}
+          <View style={styles.generatorBody}>
+            <Text style={styles.generatorTitle}>
+              {surprisePlace ? surprisePlace.name : 'Cari Ide Kencan Spontan'}
+            </Text>
+            <Text style={styles.generatorDesc}>
+              {surprisePlace
+                ? surprisePlace.address || `Spot rekomendasi kencan kategori ${surprisePlace.category || 'kuliner'}.`
+                : 'Kocok untuk memilih tempat kencan kejutan dari data lokasi nyata berdua!'}
+            </Text>
+          </View>
+
+          <View style={styles.generatorFooter}>
+            <View style={styles.generatorMetaTags}>
+              <View style={styles.metaTag}>
+                <Ionicons name="compass-outline" size={13} color="#5B4041" />
+                <Text style={styles.metaTagText}>
+                  {surprisePlace?.category || 'Rekomendasi Nyata'}
                 </Text>
-                {getPlaceRating(selectedPinPlace) ? (
-                  <View style={styles.ratingRow}>
-                    <Ionicons name="star" size={13} color="#F59E0B" />
-                    <Text style={styles.ratingText}>
-                      {getPlaceRating(selectedPinPlace)} • {selectedPinPlace.category || 'Kencan'}
-                    </Text>
-                  </View>
-                ) : (
-                  <View style={styles.ratingRow}>
-                    <Text style={styles.ratingText}>{selectedPinPlace.category || 'Kencan'}</Text>
-                  </View>
-                )}
-                {getPlacePrice(selectedPinPlace) && (
-                  <Text style={styles.floatingMapCardPrice}>{getPlacePrice(selectedPinPlace)}</Text>
-                )}
               </View>
-              <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
+              {surprisePlace && (
+                <TouchableOpacity
+                  style={[styles.metaTag, { backgroundColor: luminousColors.primaryContainer }]}
+                  onPress={() => router.push(`/places/${surprisePlace.id}` as any)}>
+                  <Ionicons name="arrow-forward" size={12} color={luminousColors.onPrimaryContainer} />
+                  <Text style={[styles.metaTagText, { color: luminousColors.onPrimaryContainer, fontWeight: '700' }]}>
+                    Buka Detail
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            <TouchableOpacity
+              style={styles.kocokBtn}
+              onPress={handleShuffleIdea}
+              activeOpacity={0.88}>
+              <Animated.View style={{ transform: [{ rotate: spin }] }}>
+                <Ionicons name="refresh" size={16} color="#FFFFFF" />
+              </Animated.View>
+              <Text style={styles.kocokBtnText}>Kocok Ide</Text>
             </TouchableOpacity>
-          )}
+          </View>
         </View>
-      ) : (
-        /* List View */
-        <ScrollView
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primaryBlue} />
-          }>
-          {displayedPlaces.length > 0 ? (
-            displayedPlaces.map((place) => {
-              const isSaved = savedIds.has(place.id);
-              const rating = getPlaceRating(place);
-              const price = getPlacePrice(place);
+
+        {/* ---------------- Curated Section Title ---------------- */}
+        <View style={styles.curatedTitleRow}>
+          <View>
+            <Text style={styles.curatedMainTitle}>Pilihan Kencan di Sekitar</Text>
+            <Text style={styles.curatedSubtitle}>
+              Data tempat nyata dari OpenStreetMap untuk momen intim bersama {partnerNames.partner}
+            </Text>
+          </View>
+          <TouchableOpacity onPress={() => router.push('/explore/map' as any)} activeOpacity={0.7}>
+            <Text style={styles.lihatSemuaLink}>Lihat Peta</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* ---------------- Curated Place Cards ---------------- */}
+        <View style={styles.placesList}>
+          {isLoading ? (
+            <View style={styles.loadingBox}>
+              <ActivityIndicator size="large" color={luminousColors.primary} />
+              <Text style={styles.loadingText}>Mencari lokasi kencan nyata...</Text>
+            </View>
+          ) : places.length === 0 ? (
+            <View style={styles.emptyBox}>
+              <View style={styles.emptyIconCircle}>
+                <Ionicons name="search-outline" size={32} color={luminousColors.primary} />
+              </View>
+              <Text style={styles.emptyTitle}>Belum Ada Tempat Ditemukan</Text>
+              <Text style={styles.emptyDesc}>
+                Tidak menemukan lokasi dengan kata kunci "{searchQuery}". Coba kata kunci lain atau pilih kategori Semua.
+              </Text>
+            </View>
+          ) : (
+            places.map((place) => {
+              const placeImg = getPlaceImage(place);
+              const isSaved = !!bookmarkedIds[place.id];
 
               return (
                 <TouchableOpacity
                   key={place.id}
                   style={styles.placeCard}
-                  onPress={() => setSelectedDetailPlace(place)}
+                  onPress={() => router.push(`/places/${place.id}` as any)}
                   activeOpacity={0.92}>
-                  <Image
-                    source={{ uri: getPlaceImage(place) }}
-                    style={styles.placeCardThumb}
-                    resizeMode="cover"
-                  />
+                  <View style={styles.placeImageContainer}>
+                    <Image source={{ uri: placeImg }} style={styles.placeImg} />
+                    <View style={styles.placeScrim} />
 
-                  <View style={styles.placeCardInfoCol}>
-                    <View style={styles.placeCardHeaderRow}>
-                      <Text style={styles.placeCardName} numberOfLines={1}>
-                        {place.name}
-                      </Text>
+                    <View style={styles.placeTopRow}>
+                      <View style={styles.ratingBadge}>
+                        <Ionicons name="star" size={13} color={luminousColors.primary} />
+                        <Text style={styles.ratingText}>
+                          {place.metadata?.rating || '4.8'}{' '}
+                          <Text style={styles.reviewCount}>
+                            ({place.metadata?.reviews || 'Terverifikasi'})
+                          </Text>
+                        </Text>
+                      </View>
                       <TouchableOpacity
-                        onPress={() => handleToggleSave(place)}
-                        style={styles.heartBookmarkBtn}>
+                        style={styles.heartBtn}
+                        onPress={(e) => {
+                          e.stopPropagation();
+                          toggleBookmark(place);
+                        }}
+                        activeOpacity={0.8}>
                         <Ionicons
                           name={isSaved ? 'heart' : 'heart-outline'}
                           size={18}
-                          color={isSaved ? '#F43F5E' : '#9CA3AF'}
+                          color={isSaved ? luminousColors.primary : '#5B4041'}
                         />
                       </TouchableOpacity>
                     </View>
 
-                    {rating ? (
-                      <View style={styles.ratingRow}>
-                        <Ionicons name="star" size={12} color="#F59E0B" />
-                        <Text style={styles.ratingText}>
-                          {rating} • {place.category || 'Kencan'}
+                    <View style={styles.placeBottomOverlay}>
+                      <View style={styles.locationPill}>
+                        <Ionicons name="location" size={13} color="#FFFFFF" />
+                        <Text style={styles.locationPillText} numberOfLines={1}>
+                          {place.address || 'Jakarta'}
                         </Text>
                       </View>
-                    ) : (
-                      <View style={styles.ratingRow}>
-                        <Text style={styles.ratingText}>{place.category || 'Kencan'}</Text>
-                      </View>
-                    )}
+                      {place.category && (
+                        <View style={styles.tagPillCrimson}>
+                          <Text style={styles.tagPillText} numberOfLines={1}>
+                            {place.category}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                  </View>
 
-                    <Text style={styles.placeCardArea} numberOfLines={1}>
-                      {place.address || 'Indonesia'}
+                  <View style={styles.placeCardBody}>
+                    <Text style={styles.placeName}>{place.name}</Text>
+                    <Text style={styles.placeSnippet} numberOfLines={2}>
+                      {place.address || 'Tempat kencan pilihan bersama pasangan.'}
                     </Text>
 
-                    {price && <Text style={styles.placeCardPrice}>{price}</Text>}
+                    <View style={styles.placePriceRow}>
+                      <View>
+                        <Text style={styles.priceLabel}>Kategori</Text>
+                        <Text style={styles.priceValue}>
+                          {place.category || 'Kencan Romantis'}
+                        </Text>
+                      </View>
+
+                      <TouchableOpacity
+                        style={styles.rencanakanBtn}
+                        onPress={() => router.push(`/places/${place.id}` as any)}
+                        activeOpacity={0.88}>
+                        <Text style={styles.rencanakanBtnText}>Rencanakan</Text>
+                        <Ionicons name="arrow-forward" size={14} color="#B90538" />
+                      </TouchableOpacity>
+                    </View>
                   </View>
                 </TouchableOpacity>
               );
             })
-          ) : (
-            <View style={styles.emptyContainer}>
-              <Ionicons name="search-outline" size={38} color="#9CA3AF" style={{ marginBottom: 10 }} />
-              <Text style={styles.emptyTitle}>Tidak ada tempat ditemukan</Text>
-              <Text style={styles.emptySub}>
-                Coba gunakan kata kunci pencarian lain atau pilih area yang berbeda di seluruh Indonesia.
-              </Text>
-              <TouchableOpacity
-                style={styles.resetFilterBtn}
-                onPress={() => {
-                  setSearchQuery('');
-                  setSelectedArea('Semua Wilayah');
-                  setSelectedCategory('Semua');
-                }}>
-                <Text style={styles.resetFilterBtnText}>Reset Filter</Text>
-              </TouchableOpacity>
-            </View>
           )}
-        </ScrollView>
-      )}
+        </View>
 
-      {/* Place Detail Modal */}
-      <Modal visible={!!selectedDetailPlace} transparent animationType="slide">
-        <View style={styles.detailModalBackdrop}>
-          <View style={styles.detailModalContent}>
-            {selectedDetailPlace && (
-              <>
-                <View style={styles.detailHeroImageContainer}>
-                  <Image
-                    source={{ uri: getPlaceImage(selectedDetailPlace) }}
-                    style={styles.detailHeroImage}
-                    resizeMode="cover"
-                  />
-                  <TouchableOpacity
-                    style={styles.detailBackButton}
-                    onPress={() => setSelectedDetailPlace(null)}>
-                    <Ionicons name="arrow-back" size={20} color="#1F2937" />
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.detailShareButton}
-                    onPress={() => handleToggleSave(selectedDetailPlace)}>
-                    <Ionicons
-                      name={savedIds.has(selectedDetailPlace.id) ? 'heart' : 'heart-outline'}
-                      size={20}
-                      color={savedIds.has(selectedDetailPlace.id) ? '#F43F5E' : '#1F2937'}
-                    />
-                  </TouchableOpacity>
-                </View>
-
-                <ScrollView
-                  style={{ maxHeight: 380 }}
-                  showsVerticalScrollIndicator={false}
-                  contentContainerStyle={{ padding: 20 }}>
-                  <Text style={styles.detailPlaceTitle}>{selectedDetailPlace.name}</Text>
-
-                  {getPlaceRating(selectedDetailPlace) ? (
-                    <View style={styles.ratingRow}>
-                      <Ionicons name="star" size={15} color="#F59E0B" />
-                      <Text style={[styles.ratingText, { fontSize: 13, fontWeight: '700' }]}>
-                        {getPlaceRating(selectedDetailPlace)} • {selectedDetailPlace.category || 'Kencan'}
-                      </Text>
-                    </View>
-                  ) : (
-                    <View style={styles.ratingRow}>
-                      <Text style={[styles.ratingText, { fontSize: 13, fontWeight: '700' }]}>
-                        {selectedDetailPlace.category || 'Kencan'}
-                      </Text>
-                    </View>
-                  )}
-
-                  <View style={styles.detailInfoRow}>
-                    <Ionicons name="location-outline" size={16} color="#6B7280" style={{ marginTop: 2 }} />
-                    <Text style={styles.detailInfoText}>
-                      {selectedDetailPlace.address || 'Indonesia'}
-                    </Text>
-                  </View>
-
-                  {getPlacePrice(selectedDetailPlace) && (
-                    <View style={styles.detailInfoRow}>
-                      <Ionicons name="wallet-outline" size={16} color="#2563EB" style={{ marginTop: 2 }} />
-                      <Text style={styles.detailInfoText}>{getPlacePrice(selectedDetailPlace)}</Text>
-                    </View>
-                  )}
-
-                  {getPlaceHours(selectedDetailPlace) && (
-                    <View style={styles.detailInfoRow}>
-                      <Ionicons name="time-outline" size={16} color="#059669" style={{ marginTop: 2 }} />
-                      <Text style={styles.detailInfoText}>{getPlaceHours(selectedDetailPlace)}</Text>
-                    </View>
-                  )}
-
-                  {selectedDetailPlace.metadata?.atmosphere && (
-                    <View style={styles.detailInfoRow}>
-                      <Ionicons name="sparkles-outline" size={16} color="#EC4899" style={{ marginTop: 2 }} />
-                      <Text style={styles.detailInfoText}>
-                        {selectedDetailPlace.metadata.atmosphere}
-                      </Text>
-                    </View>
-                  )}
-
-                  {selectedDetailPlace.metadata?.attribution && (
-                    <View style={[styles.detailInfoRow, { backgroundColor: '#F9FAFB', padding: 10, borderRadius: 10, marginTop: 6 }]}>
-                      <Ionicons name="information-circle-outline" size={16} color="#6B7280" />
-                      <Text style={[styles.detailInfoText, { color: '#4B5563', fontSize: 11 }]}>
-                        Sumber data: {selectedDetailPlace.metadata.attribution}
-                      </Text>
-                    </View>
-                  )}
-                </ScrollView>
-
-                <View style={styles.detailActionButtonsRow}>
-                  <TouchableOpacity
-                    style={styles.detailPrimaryCTA}
-                    onPress={() => handleAddToPlan(selectedDetailPlace)}
-                    activeOpacity={0.88}>
-                    <Ionicons name="add-circle" size={18} color="#FFFFFF" style={{ marginRight: 6 }} />
-                    <Text style={styles.detailPrimaryCTAText}>Tambah ke Wishlist</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.detailSecondaryCTA}
-                    onPress={() => {
-                      setSelectedDetailPlace(null);
-                      setActiveTab('map');
-                      setSelectedPinPlace(selectedDetailPlace);
-                    }}
-                    activeOpacity={0.85}>
-                    <Ionicons name="map-outline" size={18} color="#1F2937" />
-                    <Text style={styles.detailSecondaryCTAText}>Buka Peta</Text>
-                  </TouchableOpacity>
-                </View>
-              </>
-            )}
+        {/* ---------------- Weekend Tip Box ---------------- */}
+        <View style={styles.tipBox}>
+          <View style={styles.tipIconCircle}>
+            <Ionicons name="bulb" size={18} color="#FFFFFF" />
+          </View>
+          <View style={styles.tipTextGroup}>
+            <Text style={styles.tipTitle}>Tips Kencan Akhir Pekan</Text>
+            <Text style={styles.tipDesc}>
+              Ajak {partnerNames.partner} vote tempat favorit lewat tombol hati sebelum berangkat!
+            </Text>
           </View>
         </View>
-      </Modal>
+      </ScrollView>
+
+      {/* Settings / Profile Drawer */}
+      <SettingsDrawerModal
+        visible={showSettingsDrawer}
+        onClose={() => setShowSettingsDrawer(false)}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  screenRoot: {
     flex: 1,
-    backgroundColor: '#F8F9FA',
+    backgroundColor: '#FAF8FF',
   },
-  header: {
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 20,
-    paddingTop: Platform.OS === 'ios' ? 52 : 24,
-    paddingBottom: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F3F4F6',
-  },
-  headerTitleRow: {
+
+  // ---------------- Header Bar ----------------
+  headerBar: {
     flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
+    paddingHorizontal: 20,
+    paddingTop: Platform.OS === 'ios' ? 52 : 36,
+    paddingBottom: 14,
+    backgroundColor: 'rgba(250, 248, 255, 0.88)',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(218, 226, 253, 0.4)',
   },
-  screenTitle: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: '#1F2937',
-  },
-  screenSubtitle: {
-    fontSize: 12,
-    color: '#6B7280',
-    marginTop: 2,
-  },
-  viewToggleGroup: {
-    flexDirection: 'row',
-    backgroundColor: '#F3F4F6',
-    borderRadius: 10,
-    padding: 3,
-  },
-  toggleBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  toggleBtnActive: {
-    backgroundColor: '#1F2937',
-  },
-  searchBarContainer: {
+  headerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F3F4F6',
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 6,
+    gap: 10,
   },
-  searchInput: {
-    flex: 1,
-    fontSize: 14,
-    color: '#1F2937',
-    padding: 0,
+  headerAvatarOverlap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    position: 'relative',
+    width: 48,
+    height: 36,
   },
-  areaScrollContainer: {
-    gap: 8,
-    paddingVertical: 8,
-  },
-  areaPill: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: '#F3F4F6',
-  },
-  areaPillActive: {
-    backgroundColor: '#F43F5E',
-  },
-  areaText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#4B5563',
-  },
-  areaTextActive: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-  },
-  statusToast: {
+  headerIconCircle1: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 56 : 30,
-    alignSelf: 'center',
-    backgroundColor: '#1F2937',
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    zIndex: 999,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  statusToastText: {
-    fontSize: 12,
-    color: '#FFFFFF',
-    fontWeight: '600',
-  },
-  centerContainer: {
-    flex: 1,
+    left: 0,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#DAE2FD',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 12,
+    borderWidth: 2,
+    borderColor: '#FAF8FF',
   },
-  loadingText: {
-    fontSize: 14,
-    color: '#6B7280',
-    fontWeight: '500',
+  headerIconCircle2: {
+    position: 'absolute',
+    left: 18,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#C4E7FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#FAF8FF',
   },
-  listContent: {
-    padding: 16,
-    paddingBottom: 110,
-    gap: 12,
-    maxWidth: 520,
+  syncedDot: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
+    backgroundColor: '#40C2FD',
+    borderWidth: 1.5,
+    borderColor: '#FAF8FF',
+  },
+  headerTitles: {
+    gap: 1,
+  },
+  headerSyncText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#5B4041',
+  },
+  headerSyncDot: {
+    color: '#B90538',
+    fontWeight: '800',
+  },
+  headerMainTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#131B2E',
+    letterSpacing: -0.4,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  headerIconBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(255, 255, 255, 0.8)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileBadge: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#B90538',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#B90538',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+
+  // ---------------- Content ----------------
+  scrollContent: {
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 120,
+    maxWidth: 480,
     width: '100%',
     alignSelf: 'center',
+    gap: 20,
   },
-  placeCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    padding: 12,
+
+  // ---------------- Search ----------------
+  searchSection: {
+    gap: 10,
+  },
+  locationRow: {
     flexDirection: 'row',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
-    elevation: 2,
     alignItems: 'center',
-  },
-  placeCardThumb: {
-    width: 88,
-    height: 88,
-    borderRadius: 14,
-    backgroundColor: '#F3F4F6',
-    marginRight: 12,
-  },
-  placeCardInfoCol: {
-    flex: 1,
-  },
-  placeCardHeaderRow: {
-    flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 2,
+    paddingHorizontal: 2,
   },
-  placeCardName: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#1F2937',
-    flex: 1,
-    marginRight: 6,
-  },
-  heartBookmarkBtn: {
-    padding: 4,
-  },
-  ratingRow: {
+  locationGroup: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    marginBottom: 3,
   },
-  ratingText: {
-    fontSize: 11,
-    color: '#4B5563',
+  locationText: {
+    fontSize: 13,
     fontWeight: '600',
+    color: '#131B2E',
   },
-  placeCardArea: {
-    fontSize: 12,
-    color: '#6B7280',
-    marginBottom: 4,
+  curatedBadge: {
+    backgroundColor: '#C4E7FF',
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 9999,
   },
-  placeCardPrice: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: colors.primaryBlue,
+  curatedBadgeText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#001E2C',
   },
-  emptyContainer: {
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    borderRadius: 9999,
+    paddingHorizontal: 16,
+    height: 52,
+    gap: 10,
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowRadius: 10,
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: '#E2E7FF',
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 13,
+    color: '#131B2E',
+  },
+  filterBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#F2F3FF',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 48,
   },
-  emptyTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#1F2937',
-    marginBottom: 4,
+
+  // ---------------- Chips ----------------
+  chipsScroll: {
+    gap: 8,
+    paddingVertical: 2,
   },
-  emptySub: {
-    fontSize: 13,
-    color: '#6B7280',
-    textAlign: 'center',
-    paddingHorizontal: 20,
-    marginBottom: 16,
-  },
-  resetFilterBtn: {
+  chipItem: {
     paddingHorizontal: 16,
     paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: '#EFF6FF',
-  },
-  resetFilterBtnText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.primaryBlue,
-  },
-  mapViewContainer: {
-    flex: 1,
-    position: 'relative',
-    backgroundColor: '#E5E7EB',
-  },
-  mapCanvas: {
-    flex: 1,
-    backgroundColor: '#F3F4F6',
-    position: 'relative',
-  },
-  mapGridLines: {
-    ...StyleSheet.absoluteFill,
-    opacity: 0.05,
+    borderRadius: 9999,
+    backgroundColor: 'rgba(255, 255, 255, 0.88)',
+    shadowColor: '#000',
+    shadowOpacity: 0.02,
+    shadowRadius: 4,
+    elevation: 1,
     borderWidth: 1,
-    borderColor: '#000',
+    borderColor: '#E2E7FF',
   },
-  mapAreaLabelBox: {
-    position: 'absolute',
-    top: '25%',
-    left: '25%',
-    backgroundColor: 'rgba(255,255,255,0.8)',
+  chipItemActive: {
+    backgroundColor: '#B90538',
+    borderColor: '#B90538',
+  },
+  chipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#131B2E',
+  },
+  chipTextActive: {
+    color: '#FFFFFF',
+  },
+
+  // ---------------- Generator ----------------
+  generatorCard: {
+    borderRadius: 24,
+    padding: 18,
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.95)',
+    shadowColor: '#B90538',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.06,
+    shadowRadius: 16,
+    elevation: 3,
+    gap: 12,
+  },
+  generatorHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  generatorTitleGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  diceIconBg: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#FFDADB',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  generatorKicker: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#B90538',
+    letterSpacing: 0.8,
+  },
+  spontanBadge: {
+    backgroundColor: '#FFEBF0',
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
   },
-  mapAreaText: {
-    fontSize: 11,
+  spontanBadgeText: {
+    fontSize: 10,
     fontWeight: '700',
-    color: '#9CA3AF',
-    letterSpacing: 0.5,
+    color: '#B90538',
   },
-  mapPinBubble: {
-    position: 'absolute',
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    borderWidth: 2,
-    borderColor: '#FFFFFF',
-    overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.2,
-    shadowRadius: 5,
-    elevation: 4,
+  generatorBody: {
+    gap: 4,
   },
-  mapPinBubbleSelected: {
-    borderColor: '#F43F5E',
-    borderWidth: 3,
-    transform: [{ scale: 1.15 }],
-  },
-  mapPinImage: {
-    width: '100%',
-    height: '100%',
-  },
-  mapPinPulse: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: 'rgba(244, 63, 94, 0.2)',
-  },
-  floatingMapCard: {
-    position: 'absolute',
-    bottom: 95,
-    left: 16,
-    right: 16,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    padding: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.12,
-    shadowRadius: 12,
-    elevation: 6,
-  },
-  floatingMapCardThumb: {
-    width: 64,
-    height: 64,
-    borderRadius: 12,
-    marginRight: 12,
-  },
-  floatingMapCardCol: {
-    flex: 1,
-  },
-  floatingMapCardTitle: {
-    fontSize: 14,
+  generatorTitle: {
+    fontSize: 15,
     fontWeight: '700',
-    color: '#1F2937',
-    marginBottom: 2,
+    color: '#131B2E',
+    lineHeight: 21,
   },
-  floatingMapCardPrice: {
+  generatorDesc: {
     fontSize: 12,
-    fontWeight: '700',
-    color: colors.primaryBlue,
-    marginTop: 2,
-  },
-  detailModalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'flex-end',
-  },
-  detailModalContent: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    maxHeight: '90%',
-    overflow: 'hidden',
-  },
-  detailHeroImageContainer: {
-    width: '100%',
-    height: 220,
-    position: 'relative',
-    backgroundColor: '#E5E7EB',
-  },
-  detailHeroImage: {
-    width: '100%',
-    height: '100%',
-  },
-  detailBackButton: {
-    position: 'absolute',
-    top: 16,
-    left: 16,
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.9)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  detailShareButton: {
-    position: 'absolute',
-    top: 16,
-    right: 16,
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.9)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  detailPlaceTitle: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: '#1F2937',
-    marginBottom: 4,
-  },
-  detailInfoRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-    marginBottom: 8,
-  },
-  detailInfoText: {
-    fontSize: 13,
-    color: '#4B5563',
-    flex: 1,
+    color: '#5B4041',
     lineHeight: 18,
   },
-  detailActionButtonsRow: {
-    flexDirection: 'row',
-    padding: 16,
-    borderTopWidth: 1,
-    borderTopColor: '#F3F4F6',
-    gap: 12,
-    backgroundColor: '#FFFFFF',
-  },
-  detailPrimaryCTA: {
-    flex: 1,
-    backgroundColor: colors.primaryBlue,
-    borderRadius: 14,
-    paddingVertical: 14,
+  generatorFooter: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 4,
   },
-  detailPrimaryCTAText: {
-    fontSize: 14,
+  generatorMetaTags: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  metaTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#F5F2FA',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  metaTagText: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#5B4041',
+  },
+  kocokBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#B90538',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 9999,
+    shadowColor: '#B90538',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  kocokBtnText: {
+    fontSize: 12,
     fontWeight: '700',
     color: '#FFFFFF',
   },
-  detailSecondaryCTA: {
+
+  // ---------------- Curated Section Title ----------------
+  curatedTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    paddingHorizontal: 2,
+  },
+  curatedMainTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#131B2E',
+  },
+  curatedSubtitle: {
+    fontSize: 12,
+    color: '#5B4041',
+    marginTop: 2,
+  },
+  lihatSemuaLink: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#B90538',
+  },
+
+  // ---------------- Places List ----------------
+  placesList: {
+    gap: 16,
+  },
+  loadingBox: {
+    paddingVertical: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  loadingText: {
+    fontSize: 13,
+    color: luminousColors.onSurfaceVariant,
+    fontWeight: '500',
+  },
+  emptyBox: {
+    paddingVertical: 32,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    gap: 8,
+  },
+  emptyIconCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#FFEBF0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  emptyTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: luminousColors.onSurface,
+  },
+  emptyDesc: {
+    fontSize: 12,
+    color: luminousColors.onSurfaceVariant,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  placeCard: {
+    borderRadius: 24,
+    backgroundColor: '#FFFFFF',
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.05,
+    shadowRadius: 12,
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: '#ECEEFB',
+  },
+  placeImageContainer: {
+    height: 190,
+    position: 'relative',
+  },
+  placeImg: {
+    width: '100%',
+    height: '100%',
+  },
+  placeScrim: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.25)',
+  },
+  placeTopRow: {
+    position: 'absolute',
+    top: 14,
+    left: 14,
+    right: 14,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  ratingBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    borderRadius: 14,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    gap: 6,
+    gap: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.94)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 9999,
   },
-  detailSecondaryCTAText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1F2937',
+  ratingText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#131B2E',
+  },
+  reviewCount: {
+    fontSize: 10,
+    fontWeight: '400',
+    color: '#5B4041',
+  },
+  heartBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.94)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  placeBottomOverlay: {
+    position: 'absolute',
+    bottom: 12,
+    left: 14,
+    right: 14,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  locationPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(19, 27, 46, 0.65)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 9999,
+    maxWidth: '65%',
+  },
+  locationPillText: {
+    fontSize: 11,
+    color: '#FFFFFF',
+    fontWeight: '500',
+  },
+  tagPillCrimson: {
+    backgroundColor: 'rgba(185, 5, 56, 0.85)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 9999,
+    maxWidth: '32%',
+  },
+  tagPillText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  placeCardBody: {
+    padding: 16,
+    gap: 8,
+  },
+  placeName: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#131B2E',
+  },
+  placeSnippet: {
+    fontSize: 12,
+    color: '#5B4041',
+    lineHeight: 18,
+  },
+  placePriceRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#F5F2FA',
+  },
+  priceLabel: {
+    fontSize: 10,
+    color: '#8F6F71',
+    fontWeight: '500',
+  },
+  priceValue: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#131B2E',
+  },
+  rencanakanBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#FFEBF0',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 9999,
+  },
+  rencanakanBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#B90538',
+  },
+
+  // ---------------- Tip Box ----------------
+  tipBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#FFEBF0',
+    borderRadius: 20,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#FFDADB',
+  },
+  tipIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#B90538',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tipTextGroup: {
+    flex: 1,
+    gap: 2,
+  },
+  tipTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#131B2E',
+  },
+  tipDesc: {
+    fontSize: 11,
+    color: '#5B4041',
+    lineHeight: 16,
   },
 });

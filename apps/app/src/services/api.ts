@@ -81,6 +81,7 @@ import {
   CreateDecisionPollDto,
   CastVoteDto,
   DailySparkQuestionDto,
+  SubmitDailySparkAnswerDto,
   QuizSessionDto,
   CreateQuizSessionDto,
   SubmitQuizAnswersDto,
@@ -572,10 +573,11 @@ class ApiClient {
     },
 
     scanReceipt: async (dto: ScanReceiptRequest): Promise<OcrReceiptResultDto> => {
-      return this.request<OcrReceiptResultDto>('/expenses/ocr', {
+      const res = await this.request<{ data: OcrReceiptResultDto } | OcrReceiptResultDto>('/expenses/ocr', {
         method: 'POST',
         body: JSON.stringify(dto),
       });
+      return (res as any)?.data || res;
     },
   };
 
@@ -596,6 +598,17 @@ class ApiClient {
 
     complete: async (dto: CompleteUploadRequest): Promise<MediaAssetItem> => {
       return this.request<MediaAssetItem>('/media/complete', {
+        method: 'POST',
+        body: JSON.stringify(dto),
+      });
+    },
+
+    directUpload: async (dto: {
+      imageBase64: string;
+      filename?: string;
+      mimeType?: string;
+    }): Promise<MediaAssetItem> => {
+      return this.request<MediaAssetItem>('/media/direct-upload', {
         method: 'POST',
         body: JSON.stringify(dto),
       });
@@ -812,6 +825,14 @@ class ApiClient {
   readonly games = {
     getDailySpark: async (): Promise<DailySparkQuestionDto> => {
       return this.request<DailySparkQuestionDto>('/games/daily-spark');
+    },
+    answerDailySpark: async (
+      dto: SubmitDailySparkAnswerDto,
+    ): Promise<DailySparkQuestionDto> => {
+      return this.request<DailySparkQuestionDto>('/games/daily-spark/answer', {
+        method: 'POST',
+        body: JSON.stringify(dto),
+      });
     },
     listSessions: async (): Promise<QuizSessionDto[]> => {
       return this.request<QuizSessionDto[]>('/games/sessions');

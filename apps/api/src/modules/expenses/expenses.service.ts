@@ -5,10 +5,12 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '@ours/database';
 import {
+  CategoryShareDto,
   CreateExpenseRequest,
   ExpenseItem,
   ExpenseStatus,
   ExpenseSummaryResponse,
+  ReceiptHistoryItemDto,
   VoidExpenseRequest,
 } from '@ours/contracts';
 
@@ -38,7 +40,7 @@ export class ExpensesService {
     spaceId: string,
     dto: CreateExpenseRequest,
   ): Promise<ExpenseItem> {
-    if (!Number.isInteger(dto.amount) || dto.amount <= 0) {
+    if (typeof dto.amount !== 'number' || !Number.isInteger(dto.amount) || dto.amount <= 0) {
       throw new BadRequestException('Amount must be a positive integer in minor units');
     }
 
@@ -160,6 +162,92 @@ export class ExpensesService {
       }
     }
 
+    // Category mapping for Layar 8
+    const categoryTotals: Record<string, number> = {
+      MAKAN_MINUM: 0,
+      AKTIVITAS_HIBURAN: 0,
+      TRANSPORTASI: 0,
+      BELANJA_BERSAMA: 0,
+      LAINNYA: 0,
+    };
+
+    for (const exp of activeExpenses) {
+      const cat = exp.category?.toUpperCase().replace(/\s+/g, '_') || 'MAKAN_MINUM';
+      if (cat in categoryTotals) {
+        categoryTotals[cat] += exp.amount;
+      } else {
+        categoryTotals.LAINNYA += exp.amount;
+      }
+    }
+
+    const categories: CategoryShareDto[] = [
+      {
+        id: 'cat-1',
+        key: 'MAKAN_MINUM',
+        name: 'Makan & Minum',
+        subtitle: totalActiveAmount > 0 ? `${Math.round((categoryTotals.MAKAN_MINUM / totalActiveAmount) * 100)}% dari total` : '0 transaksi',
+        amount: categoryTotals.MAKAN_MINUM,
+        percentage: totalActiveAmount > 0 ? Math.round((categoryTotals.MAKAN_MINUM / totalActiveAmount) * 100) : 0,
+        color: '#E11D48',
+      },
+      {
+        id: 'cat-2',
+        key: 'AKTIVITAS_HIBURAN',
+        name: 'Aktivitas & Hiburan',
+        subtitle: totalActiveAmount > 0 ? `${Math.round((categoryTotals.AKTIVITAS_HIBURAN / totalActiveAmount) * 100)}% dari total` : '0 transaksi',
+        amount: categoryTotals.AKTIVITAS_HIBURAN,
+        percentage: totalActiveAmount > 0 ? Math.round((categoryTotals.AKTIVITAS_HIBURAN / totalActiveAmount) * 100) : 0,
+        color: '#2563EB',
+      },
+      {
+        id: 'cat-3',
+        key: 'TRANSPORTASI',
+        name: 'Transportasi',
+        subtitle: totalActiveAmount > 0 ? `${Math.round((categoryTotals.TRANSPORTASI / totalActiveAmount) * 100)}% dari total` : '0 transaksi',
+        amount: categoryTotals.TRANSPORTASI,
+        percentage: totalActiveAmount > 0 ? Math.round((categoryTotals.TRANSPORTASI / totalActiveAmount) * 100) : 0,
+        color: '#1D4ED8',
+      },
+      {
+        id: 'cat-4',
+        key: 'BELANJA_BERSAMA',
+        name: 'Belanja Bersama',
+        subtitle: totalActiveAmount > 0 ? `${Math.round((categoryTotals.BELANJA_BERSAMA / totalActiveAmount) * 100)}% dari total` : '0 transaksi',
+        amount: categoryTotals.BELANJA_BERSAMA,
+        percentage: totalActiveAmount > 0 ? Math.round((categoryTotals.BELANJA_BERSAMA / totalActiveAmount) * 100) : 0,
+        color: '#FDA4AF',
+      },
+      {
+        id: 'cat-5',
+        key: 'LAINNYA',
+        name: 'Lainnya',
+        subtitle: totalActiveAmount > 0 ? `${Math.round((categoryTotals.LAINNYA / totalActiveAmount) * 100)}% dari total` : '0 transaksi',
+        amount: categoryTotals.LAINNYA,
+        percentage: totalActiveAmount > 0 ? Math.round((categoryTotals.LAINNYA / totalActiveAmount) * 100) : 0,
+        color: '#10B981',
+      },
+    ];
+
+    const recentReceipts: ReceiptHistoryItemDto[] = activeExpenses.slice(0, 5).map((exp) => {
+      const payer = exp.paidById === m1?.userId
+        ? (m1?.user?.profile?.displayName || 'Kamu')
+        : (m2?.user?.profile?.displayName || 'Pasangan');
+      const dateStr = exp.expenseDate
+        ? new Date(exp.expenseDate).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })
+        : 'Hari ini';
+      const desc = exp.description || 'Pengeluaran Kencan';
+      return {
+        id: exp.id,
+        placeName: desc.slice(0, 18) + (desc.length > 18 ? '...' : ''),
+        fullName: desc,
+        dateLabel: `${dateStr}${exp.category ? ` • ${exp.category}` : ''}`,
+        amount: exp.amount,
+        payerLabel: `${payer} bayar`,
+        splitLabel: 'Bagi 50:50',
+        imageUrl: 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=120&q=80',
+      };
+    });
+
     return {
       totalActiveAmount,
       currencyCode: defaultCurrency,
@@ -180,6 +268,17 @@ export class ExpensesService {
       balanceOwed,
       debtorUserId,
       creditorUserId,
+      period: 'Bulan Ini',
+      month: new Date().getMonth() + 1,
+      year: new Date().getFullYear(),
+      totalSpent: totalActiveAmount,
+      targetBudget: totalActiveAmount > 0 ? 5000000 : 0,
+      trendPercentage: 0,
+      statusLabel: totalActiveAmount > 0 ? 'Tercatat' : 'Belum Ada Transaksi',
+      splitRatio: '50:50',
+      activeTab: 'Ringkasan',
+      categories,
+      recentReceipts,
     };
   }
 
